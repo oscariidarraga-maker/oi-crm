@@ -1,7 +1,7 @@
 /* OI CRM sin conexión. Todo lo guardado en el dispositivo va cifrado con una clave derivada del PIN. */
 'use strict';
 const PASARELA = (window.OI_CONFIG || {}).pasarela || '';
-const VERSION_APP = '9';
+const VERSION_APP = '10';
 const ITERACIONES = 310000, MAX_FALLOS = 10, BLOQUEO_MS = 5 * 60000, ESPERA_ENVIO_MS = 7000;
 const S = { clave: null, datos: null, cola: [], sesion: null, avisos: [], ultima: '', vista: 'dia', pila: [], filtro: 'todas', busqueda: '', red: 'ok', sincronizando: false, revocado: false, ocultoDesde: 0 };
 const $ = id => document.getElementById(id);
@@ -131,6 +131,7 @@ function describir(c) {
   if (c.accion === 'CAMBIAR_CASO') return 'Caso a ' + String(c.datos.estado || '').toLowerCase().replace(/_/g, ' ');
   if (c.accion === 'INSCRIBIR_SECUENCIA') return 'Inscribir a ' + nc(c.datos.cliente) + ' en una secuencia';
   if (c.accion === 'DETENER_SECUENCIA') return 'Detener una secuencia';
+  if (c.accion === 'EDITAR_OPORTUNIDAD') { const o = oportunidades().find(x => x.id === c.datos.opo); return 'Editar oportunidad' + (o ? ': ' + o.n : ''); }
   if (c.accion === 'CREAR_CLIENTE') return 'Nuevo cliente: ' + (c.datos.nombre || c.datos.telefono || c.datos.correo);
   if (c.accion === 'EDITAR_TAREA') return 'Editar tarea: ' + c.datos.descripcion;
   if (c.accion === 'REABRIR_TAREA') return 'Reabrir tarea';
@@ -191,6 +192,7 @@ function oportunidades() {
   (S.datos ? S.datos.clientes : []).forEach(c => (c.op || []).forEach(o => l.push(Object.assign({ cli: c.id }, o))));
   S.cola.forEach(q => {
     if (q.accion === 'MOVER_ETAPA') { const o = l.find(x => x.id === q.datos.opo); if (o) { o.e = q.datos.etapa; o.pend = 1; } }
+    else if (q.accion === 'EDITAR_OPORTUNIDAD') { const o = l.find(x => x.id === q.datos.opo); if (o) { if (q.datos.nombre !== undefined) o.n = q.datos.nombre; if (q.datos.valor !== undefined) o.v = q.datos.valor; if (q.datos.cierre !== undefined) o.fc = q.datos.cierre; if (q.datos.prob !== undefined) o.pr = q.datos.prob; o.pend = 1; } }
     else if (q.accion === 'CREAR_OPORTUNIDAD' && !l.some(x => x.id === q.id)) l.push({ id: q.id, cli: q.datos.cliente, n: q.datos.nombre, e: q.datos.etapa, v: Number(q.datos.valor) || 0, m: 'COP', pend: 1, nueva: 1 });
   });
   return l;
@@ -290,9 +292,31 @@ function vDia() {
   const conTarea = {}; ts.forEach(t => { if (t.cli) conTarea[t.cli] = 1; });
   const intere = clientes().filter(c => (c.pi || 0) >= 50 && !conTarea[c.id] && c.s !== 'ACTIVO' && c.s !== 'PERDIDO').sort((a, b) => b.pi - a.pi).slice(0, 5);
   if (intere.length) x += '<h2>Interesados sin seguimiento</h2>' + intere.map(tarjetaInteres).join('');
+  const frios = enfriandose(conTarea, intere);
+  if (frios.length) x += '<h2>Se están enfriando</h2><p class="gris peq">Con oportunidad abierta o buen interés y sin contacto hace más de ' + diasEnfriado() + ' días.</p>' + frios.slice(0, 5).map(k => tarjetaFrio(k)).join('');
   if (rProx.length) x += '<h2>Próximos 7 días</h2>' + rProx.map(r => tarjetaReunion(r)).join('');
   if (cProx.length) x += '<h2>Cumpleaños de la semana</h2>' + cProx.map(x2 => tarjetaCumple(x2.c, x2.d)).join('');
   return x;
+}
+const diasEnfriado = () => Number(S.datos && S.datos.ajustes && S.datos.ajustes.enfriado) || 21;
+/** Último contacto conocido: historial, reuniones realizadas y lo registrado aquí sin sincronizar. */
+function ultimoContacto(c) {
+  let u = ((c.his || [])[0] || {}).f || '';
+  reuniones().forEach(r => { if (r.cli === c.id && r.e === 'CELEBRADA_CONFIRMADA') { const f = String(r.f).slice(0, 10); if (f > u) u = f; } });
+  S.cola.forEach(q => { if ((q.accion === 'REGISTRAR_CONTACTO' || q.accion === 'AGREGAR_NOTA') && idReal(q.datos.cliente) === c.id) { const f = q.fecha.slice(0, 10); if (f > u) u = f; } });
+  return u;
+}
+/** Quien tiene oportunidad abierta o buen interés y lleva semanas sin contacto ni tarea: el negocio se enfría. */
+function enfriandose(conTarea, yaListados) {
+  const lim = masDias(-diasEnfriado()), fuera = {}; (yaListados || []).forEach(c => { fuera[c.id] = 1; });
+  const ops = {}; oportunidades().forEach(o => { if (CERRADAS.indexOf(o.e) < 0) ops[o.cli] = (ops[o.cli] || 0) + (Number(o.v) || 1); });
+  return clientes().filter(c => !c.nuevo && !fuera[c.id] && !conTarea[c.id] && (ops[c.id] || ((c.pi || 0) >= 40 && c.s === 'PROSPECTO')))
+    .map(c => ({ c, u: ultimoContacto(c), v: ops[c.id] || 0 })).filter(k => k.u && k.u < lim)
+    .sort((a, b) => b.v - a.v || a.u.localeCompare(b.u));
+}
+function tarjetaFrio(k) {
+  const dias = Math.round((new Date(hoy() + 'T12:00:00') - new Date(k.u + 'T12:00:00')) / 864e5);
+  return '<div class="card"><button class="tocable" data-a="ficha" data-id="' + esc(k.c.id) + '"><h3>' + esc(k.c.n) + '</h3><span class="etq mal">Sin contacto hace ' + dias + ' días</span>' + (k.v > 1 ? '<span class="etq">' + dinero(k.v) + ' en juego</span>' : '') + '</button><div class="acc">' + botonesContacto(k.c) + '<button class="b" data-a="nuevaT" data-id="' + esc(k.c.id) + '">Nueva tarea</button></div></div>';
 }
 const FILTROS = [['todas', 'Todas'], ['vencidas', 'Vencidas'], ['hoy', 'Hoy'], ['prox', 'Próximas'], ['sinf', 'Sin fecha'], ['sinc', 'Sin cliente']];
 function vTareas() {
@@ -534,7 +558,7 @@ function vAgenda() {
 /* ---------- Embudo ---------- */
 function tarjetaOportunidad(o) {
   const cerr = CERRADAS.indexOf(o.e) >= 0;
-  return '<div class="card"><button class="tocable" data-a="ficha" data-id="' + esc(o.cli) + '"><h3>' + esc(o.n) + '</h3><span class="gris">' + esc(nombreCli(o.cli)) + (o.v ? ' · ' + dinero(o.v, o.m) : '') + '</span><br><span class="etq' + (o.e === 'Ganado' ? ' oro' : o.e === 'Perdido' ? ' mal' : '') + '">' + esc(o.e) + '</span>' + (o.pend ? '<span class="etq oro">Por confirmar</span>' : '') + '</button>' + (o.nueva || cerr ? '' : '<div class="acc"><button class="b" data-a="moverO" data-id="' + esc(o.id) + '">Mover de etapa</button><button class="b p" data-a="moverYa" data-id="' + esc(o.id) + '" data-e="' + esc(siguienteEtapa(o.e)) + '">' + esc(siguienteEtapa(o.e)) + ' ›</button></div>') + '</div>';
+  return '<div class="card"><button class="tocable" data-a="ficha" data-id="' + esc(o.cli) + '"><h3>' + esc(o.n) + '</h3><span class="gris">' + esc(nombreCli(o.cli)) + (o.v ? ' · ' + dinero(o.v, o.m) : '') + '</span><br><span class="etq' + (o.e === 'Ganado' ? ' oro' : o.e === 'Perdido' ? ' mal' : '') + '">' + esc(o.e) + '</span>' + (o.fc ? '<span class="etq' + (o.fc < hoy() && !cerr ? ' mal' : '') + '">Cierre ' + fmtDia(o.fc) + '</span>' : '') + (o.pr ? '<span class="etq">' + o.pr + '%</span>' : '') + (o.pend ? '<span class="etq oro">Por confirmar</span>' : '') + '</button>' + (o.nueva || cerr ? '' : '<div class="acc"><button class="b" data-a="moverO" data-id="' + esc(o.id) + '">Mover de etapa</button><button class="b" data-a="editarO" data-id="' + esc(o.id) + '">Editar</button><button class="b p" data-a="moverYa" data-id="' + esc(o.id) + '" data-e="' + esc(siguienteEtapa(o.e)) + '">' + esc(siguienteEtapa(o.e)) + ' ›</button></div>') + '</div>';
 }
 function etapasAbiertas() { return ((S.datos && S.datos.etapas) || []).filter(e => CERRADAS.indexOf(e) < 0 && ['Cliente activo', 'Fidelización', 'Reactivación'].indexOf(e) < 0); }
 function siguienteEtapa(e) { const l = etapasAbiertas(), i = l.indexOf(e); return i >= 0 && i < l.length - 1 ? l[i + 1] : 'Ganado'; }
@@ -625,7 +649,7 @@ function telNorm(v) {
 /** Saca nombre, teléfono y correo de un texto copiado: una tarjeta vCard, un número de WhatsApp o un contacto en texto. */
 function leerContacto(t) {
   t = String(t || '').slice(0, 5000);
-  const r = { nombre: '', telefono: '', correo: '' };
+  const r = { nombre: '', telefono: '', correo: '', nacimiento: '' };
   if (/BEGIN:VCARD/i.test(t)) {
     const lin = t.replace(/\r?\n[ \t]/g, '').split(/\r?\n/), val = l => l.slice(l.indexOf(':') + 1).trim();
     lin.forEach(l => {
@@ -633,6 +657,7 @@ function leerContacto(t) {
       else if (/^N[:;]/i.test(l) && !r.nombre) { const p = val(l).split(';'); r.nombre = [p[1], p[2], p[0]].filter(Boolean).join(' ').trim(); }
       else if (/^(item\d+\.)?TEL[:;]/i.test(l) && !r.telefono) r.telefono = val(l).replace(/^tel:/i, '');
       else if (/^(item\d+\.)?EMAIL[:;]/i.test(l) && !r.correo) r.correo = val(l).toLowerCase();
+      else if (/^BDAY[:;]/i.test(l)) { const b = val(l).replace(/T.*$/, '').match(/^(\d{4})-?(\d{2})-?(\d{2})$/); if (b && b[1] !== '1604') r.nacimiento = b[1] + '-' + b[2] + '-' + b[3]; }
     });
   } else {
     const m = t.match(/[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/); if (m) r.correo = m[0].toLowerCase();
@@ -879,7 +904,7 @@ const A = {
       ent('nnN', 'Nombre completo', 'text', d.nombre, ' autocapitalize="words" maxlength="150" data-e="nuevoDup"') +
       ent('nnT', 'Teléfono o WhatsApp (con indicativo si no es de Colombia)', 'tel', d.telefono, ' data-e="nuevoDup"') +
       ent('nnE', 'Correo', 'email', d.correo, ' autocapitalize="off" data-e="nuevoDup"') + '<div id="nnDup"></div>' +
-      ent('nnC', 'Ciudad', 'text', '', ' maxlength="80"') +
+      ent('nnC', 'Ciudad', 'text', '', ' maxlength="80"') + ent('nnB', 'Fecha de nacimiento', 'date', d.nacimiento, ' max="' + hoy() + '"') +
       '<label for="nnF">¿Cómo llegó?</label><select id="nnF">' + ['WhatsApp', 'Llamada', 'Referido', 'Redes sociales', 'Evento', 'Página web', 'Otro'].map(f => '<option>' + f + '</option>').join('') + '</select>' +
       '<label for="nnS">Estado</label><select id="nnS"><option value="PROSPECTO">Prospecto</option><option value="ACTIVO">Cliente activo</option></select>' +
       '<label for="nnTi">Tipo</label><select id="nnTi"><option value="PERSONA">Persona</option><option value="EMPRESA">Empresa</option></select>' +
@@ -894,7 +919,7 @@ const A = {
     if (!t) { $('nnErr').textContent = 'No se pudo leer lo copiado. Mantén presionado el campo de teléfono y elige Pegar.'; return; }
     const d = leerContacto(t);
     if (!d.nombre && !d.telefono && !d.correo) { $('nnErr').textContent = 'Lo copiado no tiene nombre, teléfono ni correo.'; return; }
-    if (d.nombre) $('nnN').value = d.nombre; if (d.telefono) $('nnT').value = d.telefono; if (d.correo) $('nnE').value = d.correo;
+    if (d.nombre) $('nnN').value = d.nombre; if (d.telefono) $('nnT').value = d.telefono; if (d.correo) $('nnE').value = d.correo; if (d.nacimiento) $('nnB').value = d.nacimiento;
     $('nnErr').textContent = ''; avisoRepetido();
   },
   nuevoCYa() {
@@ -902,7 +927,7 @@ const A = {
     if (!nombre && !telefono && !correo) { $('nnErr').textContent = 'Escribe al menos el nombre, el teléfono o el correo.'; return; }
     if (correo && !/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(correo)) { $('nnErr').textContent = 'Revisa el correo.'; return; }
     if (telefono && telefono.replace(/\D/g, '').length < 7) { $('nnErr').textContent = 'Revisa el teléfono.'; return; }
-    const datos = { nombre, telefono: telNorm(telefono), correo, ciudad: $('nnC').value.trim(), fuente: $('nnF').value, estado: $('nnS').value, tipo: $('nnTi').value, autorizacion: $('nnA').value, nota: $('nnO').value.trim() };
+    const datos = { nombre, telefono: telNorm(telefono), correo, ciudad: $('nnC').value.trim(), nacimiento: $('nnB').value, fuente: $('nnF').value, estado: $('nnS').value, tipo: $('nnTi').value, autorizacion: $('nnA').value, nota: $('nnO').value.trim() };
     cerrarDialogo();
     encolar('CREAR_CLIENTE', datos, 'Cliente creado').then(it => { S.vistaPrevia = S.vista === 'ficha' ? S.vistaPrevia : S.vista; S.pila.push(it.id); S.vista = 'ficha'; pintar(); window.scrollTo(0, 0); });
   },
@@ -931,6 +956,22 @@ const A = {
     const base = ((S.datos.clientes.find(c => c.id === o.cli) || {}).op || []).find(x => x.id === o.id);
     const motivo = $('mpm') ? $('mpm').value.trim() : '';
     cerrarDialogo(); encolar('MOVER_ETAPA', { opo: o.id, etapa: e, base: base ? base.e : '', nombre: o.n, motivo }, 'Movida a ' + e);
+  },
+  editarO(el) {
+    const o = oportunidades().find(x => x.id === el.dataset.id); if (!o) return;
+    dialogo('<h3>Editar oportunidad</h3><label for="eon">Nombre</label><input id="eon" maxlength="150" value="' + esc(o.n) + '"><label for="eov">Valor (' + esc(o.m || 'COP') + ')</label><input id="eov" type="number" inputmode="numeric" min="0" step="1" value="' + (o.v || '') + '"><label for="eof">Fecha estimada de cierre</label><input id="eof" type="date" value="' + esc(o.fc || '') + '"><label for="eop">Probabilidad de cierre (%)</label><input id="eop" type="number" inputmode="numeric" min="0" max="100" value="' + (o.pr || '') + '"><div id="eoerr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="editarOYa" data-id="' + esc(o.id) + '">Guardar</button></div>');
+  },
+  editarOYa(el) {
+    const o = oportunidades().find(x => x.id === el.dataset.id); if (!o) return;
+    const n = $('eon').value.trim(), v = $('eov').value.trim(), f = $('eof').value, p = $('eop').value.trim();
+    if (!n) { $('eoerr').textContent = 'El nombre no puede quedar vacío.'; return; }
+    if (v && !(Number(v) >= 0)) { $('eoerr').textContent = 'Revisa el valor.'; return; }
+    if (p && !(Number(p) >= 0 && Number(p) <= 100)) { $('eoerr').textContent = 'La probabilidad va de 0 a 100.'; return; }
+    const base = ((S.datos.clientes.find(c => c.id === o.cli) || {}).op || []).find(x => x.id === o.id) || {};
+    const d = { opo: o.id, baseValor: base.v === undefined ? '' : base.v };
+    if (n !== o.n) d.nombre = n; if (v !== String(o.v || '')) d.valor = v === '' ? 0 : Number(v); if (f !== (o.fc || '')) d.cierre = f; if (p !== String(o.pr || '')) d.prob = p === '' ? 0 : Number(p);
+    if (Object.keys(d).length === 2) { cerrarDialogo(); avisar('Sin cambios'); return; }
+    cerrarDialogo(); encolar('EDITAR_OPORTUNIDAD', d, 'Oportunidad actualizada');
   },
   nuevaO(el) {
     const id = el.dataset.id || '';
