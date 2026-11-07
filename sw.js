@@ -1,5 +1,5 @@
 /* Guarda solo el código de la app, nunca datos de clientes: esos van cifrados en IndexedDB. */
-const CACHE = 'oi-crm-v13';
+const CACHE = 'oi-crm-v14';
 const ARCHIVOS = ['./', 'index.html', 'app.js', 'config.js', 'estilos.css', 'manifest.webmanifest', 'icono-180.png', 'icono-192.png', 'icono-512.png'];
 // 'reload' baja cada archivo del servidor y no de la copia del navegador, para no instalar una versión vieja.
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(ARCHIVOS.map(u => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting())); });

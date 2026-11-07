@@ -1,7 +1,7 @@
 /* OI CRM sin conexión. Todo lo guardado en el dispositivo va cifrado con una clave derivada del PIN. */
 'use strict';
 const PASARELA = (window.OI_CONFIG || {}).pasarela || '';
-const VERSION_APP = '13';
+const VERSION_APP = '14';
 const ITERACIONES = 310000, MAX_FALLOS = 10, BLOQUEO_MS = 5 * 60000, ESPERA_ENVIO_MS = 7000;
 const S = { clave: null, datos: null, cola: [], sesion: null, avisos: [], ultima: '', vista: 'dia', pila: [], filtro: 'todas', busqueda: '', red: 'ok', sincronizando: false, revocado: false, ocultoDesde: 0 };
 const $ = id => document.getElementById(id);
@@ -29,6 +29,13 @@ function diasCumple(md) {
 const digitosWa = c => String((c && (c.w || (c.tel && c.tel[0]))) || '').replace(/\D/g, '');
 const rellenar = (m, c, onb) => String(m || '').replace(/\{\{\s*enlace_onboarding\s*\}\}/gi, onb || (c && c.onb) || '').replace(/\{\{\s*nombre\s*\}\}/gi, (c && c.nn) || String((c && c.n) || '').split(/\s+/)[0] || '').replace(/\{\{\s*nombre_completo\s*\}\}/gi, (c && c.n) || '');
 const urlWa = (dig, texto) => 'https://wa.me/' + dig + (texto ? '?text=' + encodeURIComponent(texto) : '');
+/** Texto del onboarding: tu plantilla ONBOARDING si existe; si no trae el enlace, se agrega al final. */
+function textoOnb(c, f) {
+  const p = ((S.datos && S.datos.plantillas) || []).find(x => String(x.s).toUpperCase() === 'ONBOARDING');
+  if (p) { const t = rellenar(p.m, c, f.u); return t.indexOf(f.u) >= 0 ? t : t.trim() + '\n' + f.u; }
+  const nom = (c && c.nn) || String((c && c.n) || '').split(/\s+/)[0] || '';
+  return 'Hola' + (nom ? ' ' + nom : '') + ', para avanzar con ' + (f.k === 'GENERAL' ? 'tu proceso' : 'tu ' + f.n) + ' te comparto el formulario. Diligenciarlo toma unos minutos y me permite preparar tu caso:\n' + f.u + '\nQuedo atento a cualquier duda.';
+}
 /** Llamar, WhatsApp y correo en un toque. WhatsApp abre la conversación con el texto listo; el envío lo haces tú. */
 function botonesContacto(c, contexto) {
   if (!c) return '';
@@ -349,7 +356,7 @@ function vFicha(id) {
   const dc = diasCumple(c.cu), car = enlace(c.car);
   let x = '<h1>' + esc(c.n) + '</h1><span class="etq">' + esc(String(c.s || '').replace(/_/g, ' ')) + '</span>' + (c.ci ? '<span class="etq">' + esc(c.ci) + '</span>' : '') + etqInteres(c.pi) + (dc === 0 ? '<span class="etq oro">Cumple hoy</span>' : '') + String(c.et || '').split('|').map(t => t.trim()).filter(Boolean).map(t => '<span class="etq"># ' + esc(t) + '</span>').join('');
   x += '<div class="acc">' + botonesContacto(c, dc === 0 ? 'CUMPLE_HOY' : dc !== null && dc <= 7 ? 'CUMPLE_SEMANA' : '') + (car ? '<a class="b" target="_blank" rel="noopener noreferrer" href="' + esc(car) + '">Carpeta</a>' : '') + '</div>';
-  x += '<div class="acc"><button class="b p" data-a="agendar" data-id="' + esc(id) + '">Agendar reunión</button><button class="b" data-a="nuevaT" data-id="' + esc(id) + '">Nueva tarea</button><button class="b" data-a="nota" data-id="' + esc(id) + '">Agregar nota</button></div>';
+  x += '<div class="acc"><button class="b p" data-a="agendar" data-id="' + esc(id) + '">Agendar reunión</button><button class="b" data-a="nuevaT" data-id="' + esc(id) + '">Nueva tarea</button><button class="b" data-a="nota" data-id="' + esc(id) + '">Agregar nota</button><button class="b" data-a="onb" data-id="' + esc(id) + '">Enviar onboarding</button></div>';
   x += '<div class="acc"><button class="b" data-a="editar" data-id="' + esc(id) + '">Editar contacto</button>' + (c.nuevo ? '' : '<button class="b" data-a="foto" data-id="' + esc(id) + '">Foto de documento</button><button class="b" data-a="unificar" data-id="' + esc(id) + '">Unificar con otro</button>') + '</div>' + (c.nuevo ? '<p class="gris peq">Recién creado: se guarda en el CRM al sincronizar. Ya puedes agendarle, crearle tareas o contratos; las fotos y la unificación se habilitan cuando el CRM lo confirme.</p>' : c.pend ? '<p class="gris peq">Tiene cambios por confirmar en el CRM.</p>' : '');
   const cumpleTxt = c.cu ? new Date('2000-' + c.cu + 'T12:00:00').toLocaleDateString('es-CO', { day: 'numeric', month: 'long' }) + (dc === 0 ? ' (hoy)' : dc !== null ? ' (en ' + dc + (dc === 1 ? ' día)' : ' días)') : '') : '';
   const datos = [['Teléfonos', (c.tel || []).join(', ')], ['Correos', (c.mail || []).join(', ')], ['Cumpleaños', cumpleTxt], ['Relación', c.rc], ['Llegó por', c.fu], ['Interés', c.pi ? c.pi + '/100 · ' + (c.pm || '') : ''], ['Necesidad', c.nec], ['Objeciones', c.obj], ['Próxima acción', c.pa], ['Próximo contacto', c.fp ? fmtDia(c.fp) : ''], ['Notas', c.not]].filter(d => d[1]);
@@ -404,7 +411,7 @@ function tarjetaFlujo(f, conNombre) {
   const c = cliente(f.cli), dig = digitosWa(c), msg = (s, t) => { const p = plTipo(s); return p && dig.length >= 8 ? '<a class="b" target="_blank" rel="noopener noreferrer" data-reg="WHATSAPP" data-cli="' + esc(f.cli) + '" href="' + esc(urlWa(dig, rellenar(p.m, c, s === 'ONBOARDING' ? f.ol : ''))) + '">' + t + '</a>' : ''; };
   let acc = '';
   if (f.e === 'EN_CURSO') acc += '<button class="b p" data-a="flujoAv" data-id="' + esc(f.id) + '">Hecho: ' + esc(f.a) + '</button>';
-  if (f.onb) acc += msg('ONBOARDING', 'Enviar formulario');
+  if (f.onb) acc += '<button class="b" data-a="onb" data-id="' + esc(f.cli) + '">Enviar formulario</button>';
   if (f.res) acc += msg('RESENA', 'Pedir reseña');
   if (f.e === 'PAUSADO') acc += '<button class="b" data-a="flujoAcc" data-id="' + esc(f.id) + '" data-x="REANUDAR">Reanudar</button>';
   return '<div class="card"><h3>' + esc(conNombre ? (nombreCli(f.cli) + ' · ' + f.s) : f.s) + '</h3><span class="etq' + (f.at ? ' mal' : f.e === 'TERMINADO' ? '' : ' oro') + '">' + (f.e === 'TERMINADO' ? 'Terminado' : f.e === 'PAUSADO' ? 'Pausado' : (f.at ? 'Atrasado · ' : '') + esc(f.a)) + '</span>' + (f.e === 'EN_CURSO' && !f.pend ? '<span class="gris peq"> ' + f.d + ' de ' + f.p + ' días</span>' : '') + (f.pend ? '<span class="etq oro">Por confirmar</span>' : '') + '<details style="margin-top:6px"><summary class="gris peq">Ver las ' + f.t + ' etapas</summary>' + lista + '</details><div class="acc">' + acc + '</div></div>';
@@ -741,6 +748,23 @@ const A = {
     const op = (t, txt) => '<a class="card tocable" style="display:block;text-decoration:none;color:inherit" target="_blank" rel="noopener noreferrer" data-reg="WHATSAPP" data-cli="' + esc(c.id) + '" href="' + esc(urlWa(dig, txt)) + '"><b>' + esc(t) + '</b>' + (txt ? '<br><span class="gris peq">' + esc(txt.slice(0, 140)) + (txt.length > 140 ? '…' : '') + '</span>' : '') + '</a>';
     dialogo('<h3>WhatsApp a ' + esc(c.n) + '</h3><p class="gris peq">Se abre WhatsApp con el texto escrito. Revísalo y envíalo tú.</p><div style="max-height:60vh;overflow:auto">' + op('Mensaje en blanco', '') + pl.map(p => op(p.n, rellenar(p.m, c))).join('') + '</div><div class="acc"><button class="b" data-a="cerrarD">Cerrar</button></div>');
   },
+  // ----- Onboarding: eliges el formulario y el canal; el mensaje lo envías tú -----
+  onb(el) {
+    const c = cliente(el.dataset.id); if (!c) return;
+    const l = ((S.datos.ajustes || {}).onbL) || [];
+    if (!l.length) { dialogo('<h3>Enviar onboarding</h3><p>Aún no hay enlaces de los formularios. En el CRM, hoja CONFIGURACION, pega el enlace en <b>ONBOARDING_ENLACE_ESTUDIO</b> y <b>ONBOARDING_ENLACE_RETIRO</b>. La app los recibe en la siguiente sincronización.</p><div class="acc"><button class="b p" data-a="cerrarD">Entendido</button></div>'); return; }
+    // Se sugiere el formulario del servicio del cliente, si el CRM lo sabe.
+    const suger = l.findIndex(f => f.u === c.onb || flujos().some(x => x.cli === c.id && x.ol === f.u));
+    dialogo('<h3>Onboarding de ' + esc(c.n) + '</h3><p class="gris peq">¿Qué formulario le envías?</p>' + l.map((f, i) => '<button class="b ancho' + (i === suger ? ' p' : '') + '" style="margin:3px 0" data-a="onbF" data-id="' + esc(c.id) + '" data-i="' + i + '">' + esc(f.n) + (i === suger ? ' · su servicio' : '') + '</button>').join('') + '<div class="acc"><button class="b" data-a="cerrarD">Cancelar</button></div>');
+  },
+  onbF(el) {
+    const c = cliente(el.dataset.id), f = (((S.datos.ajustes || {}).onbL) || [])[Number(el.dataset.i)]; if (!c || !f) return;
+    const txt = textoOnb(c, f), dig = digitosWa(c), mails = (c.mail || []).filter((m, i, l) => m && l.indexOf(m) === i), asunto = 'Formulario ' + (f.k === 'GENERAL' ? 'de inicio' : f.n);
+    const op = (href, t, canal) => '<a class="b ancho" style="margin:3px 0;display:block;text-align:center" target="_blank" rel="noopener noreferrer" data-reg="' + canal + '" data-cli="' + esc(c.id) + '" href="' + esc(href) + '">' + esc(t) + '</a>';
+    const canales = (dig.length >= 8 ? op(urlWa(dig, txt), 'Por WhatsApp', 'WHATSAPP') : '') + mails.map(m => op('mailto:' + m + '?subject=' + encodeURIComponent(asunto) + '&body=' + encodeURIComponent(txt), 'Por correo a ' + m, 'CORREO')).join('');
+    dialogo('<h3>' + esc(f.n) + '</h3><p class="gris peq">Se abre WhatsApp o tu correo con el mensaje escrito. Revísalo y envíalo tú.</p><div class="card" style="white-space:pre-wrap">' + esc(txt) + '</div>' + (canales || '<p class="gris">No tiene WhatsApp ni correo guardado. Copia el mensaje.</p>') + '<div class="acc"><button class="b" data-a="onbCopiar" data-t="' + esc(txt) + '">Copiar mensaje</button><button class="b" data-a="cerrarD">Cerrar</button></div>');
+  },
+  onbCopiar(el) { const t = el.dataset.t; (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(() => avisar('Mensaje copiado'), () => avisar('No se pudo copiar: selecciónalo y cópialo')); },
   // ----- Flujo de servicio -----
   modoEmb(el) { S.modoEmb = el.dataset.m; pintar(); },
   flujoAv(el) {
