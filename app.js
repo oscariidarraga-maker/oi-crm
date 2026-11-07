@@ -1,7 +1,7 @@
 /* OI CRM sin conexión. Todo lo guardado en el dispositivo va cifrado con una clave derivada del PIN. */
 'use strict';
 const PASARELA = (window.OI_CONFIG || {}).pasarela || '';
-const VERSION_APP = '4';
+const VERSION_APP = '5';
 const ITERACIONES = 310000, MAX_FALLOS = 10, BLOQUEO_MS = 5 * 60000, ESPERA_ENVIO_MS = 7000;
 const S = { clave: null, datos: null, cola: [], sesion: null, avisos: [], ultima: '', vista: 'dia', pila: [], filtro: 'todas', busqueda: '', red: 'ok', sincronizando: false, revocado: false, ocultoDesde: 0 };
 const $ = id => document.getElementById(id);
@@ -192,10 +192,11 @@ const nombreCli = id => { const c = cliente(id); return c ? c.n : ''; };
 function ordenVence(a, b) { return (a.v || '9999').localeCompare(b.v || '9999'); }
 
 /* ---------- Pintado ---------- */
-const VISTAS = { dia: ['Mi día', vDia], tareas: ['Tareas', vTareas], clientes: ['Clientes', vClientes], embudo: ['Embudo', vEmbudo], sinc: ['Sincronizar', vSinc] };
+const VISTAS = { dia: ['Mi día', vDia], agenda: ['Agenda', vAgenda], tareas: ['Tareas', vTareas], clientes: ['Clientes', vClientes], embudo: ['Embudo', vEmbudo], sinc: ['Sincronizar', vSinc] };
+const NAV_CORTO = { dia: 'Hoy', agenda: 'Agenda', tareas: 'Tareas', clientes: 'Clientes', embudo: 'Embudo', sinc: 'Sinc.' };
 function pintar() {
   const r = $('raiz'), ficha = S.vista === 'ficha', titulo = ficha ? (nombreCli(S.pila[S.pila.length - 1]) || 'Cliente') : VISTAS[S.vista][0];
-  r.innerHTML = '<header class="cab">' + (ficha ? '<button class="volver" data-a="volver" aria-label="Volver">‹ Volver</button>' : '') + '<b>' + esc(titulo) + '</b><button class="estado" data-a="ir" data-v="sinc" id="est"></button></header><main id="m"></main><nav class="nav" aria-label="Secciones">' + ['dia', 'tareas', 'clientes', 'embudo', 'sinc'].map(v => '<button data-a="ir" data-v="' + v + '" class="' + (S.vista === v ? 'activo' : '') + '"' + (S.vista === v ? ' aria-current="page"' : '') + '>' + VISTAS[v][0] + '</button>').join('') + '</nav>';
+  r.innerHTML = '<header class="cab">' + (ficha ? '<button class="volver" data-a="volver" aria-label="Volver">‹ Volver</button>' : '') + '<b>' + esc(titulo) + '</b><button class="estado" data-a="ir" data-v="sinc" id="est"></button></header><main id="m"></main><nav class="nav" aria-label="Secciones">' + ['dia', 'agenda', 'tareas', 'clientes', 'embudo', 'sinc'].map(v => '<button data-a="ir" data-v="' + v + '" class="' + (S.vista === v ? 'activo' : '') + '"' + (S.vista === v ? ' aria-current="page"' : '') + ' aria-label="' + VISTAS[v][0] + '">' + NAV_CORTO[v] + '</button>').join('') + '</nav>';
   $('m').innerHTML = ficha ? vFicha(S.pila[S.pila.length - 1]) : VISTAS[S.vista][1]();
   pintarEstado();
 }
@@ -326,6 +327,37 @@ function vSinc() {
   return x;
 }
 
+/* ---------- Agenda de la semana ---------- */
+const DIAS_SEM = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+function lunesDe(desplazamiento) { const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7) + 7 * (desplazamiento || 0)); return d; }
+function diasSemana(desplazamiento) { const l = lunesDe(desplazamiento); return Array.from({ length: 7 }, (_, i) => { const d = new Date(l); d.setDate(l.getDate() + i); return fechaLocal(d); }); }
+const etiquetaDia = f => { const d = new Date(f + 'T12:00:00'); return DIAS_SEM[d.getDay()].replace(/^./, x => x.toUpperCase()) + ' ' + d.getDate() + ' ' + d.toLocaleDateString('es-CO', { month: 'short' }).replace('.', ''); };
+/** Una tarea en la agenda: cerrarla o pasarla a otro día con un toque. */
+function tareaAgenda(t, atrasada) {
+  const cn = nombreCli(t.cli);
+  return '<div class="card"><button class="tocable" data-a="verTarea" data-id="' + esc(t.id) + '"><h3>' + esc(t.d) + '</h3><span class="gris">' + esc(cn || 'Sin cliente') + '</span>' + (atrasada ? ' <span class="etq mal">Vencía ' + fmtDia(t.v) + '</span>' : '') + (t.pend ? '<span class="etq oro">Por confirmar</span>' : '') + '</button><div class="acc"><button class="b p" data-a="cerrarT" data-id="' + esc(t.id) + '">Hecha</button>' + (atrasada ? '<button class="b" data-a="reprogYa" data-id="' + esc(t.id) + '" data-f="' + hoy() + '">Pasar a hoy</button>' : '') + '<button class="b" data-a="moverT" data-id="' + esc(t.id) + '">Mover</button>' + botonesContacto(cliente(t.cli)) + '</div></div>';
+}
+function vAgenda() {
+  if (!S.datos) return '<div class="vacio">Aún no hay datos. Sincroniza con internet para descargarlos.</div>';
+  const sem = S.semana || 0, dias = diasSemana(sem), h = hoy(), ts = tareas(), rs = reuniones().filter(r => r.e !== 'CANCELADA');
+  const rDia = f => rs.filter(r => { const d = new Date(r.f); return !isNaN(d) && fechaLocal(d) === f; }).sort((a, b) => new Date(a.f) - new Date(b.f));
+  const tDia = f => ts.filter(t => t.v === f);
+  const nR = dias.reduce((s, f) => s + rDia(f).length, 0), nT = dias.reduce((s, f) => s + tDia(f).length, 0), atras = ts.filter(t => t.v && t.v < h).sort(ordenVence), sinF = ts.filter(t => !t.v);
+  const rango = etiquetaDia(dias[0]).split(' ').slice(1).join(' ') + ' al ' + etiquetaDia(dias[6]).split(' ').slice(1).join(' ');
+  let x = '<div class="chips"><button data-a="semana" data-s="' + (sem - 1) + '">‹ Anterior</button><button data-a="semana" data-s="0" class="' + (sem === 0 ? 'activo' : '') + '">Esta semana</button><button data-a="semana" data-s="' + (sem + 1) + '">Siguiente ›</button></div>';
+  x += '<h1 style="font-size:20px">Del ' + esc(rango) + '</h1><div class="met"><button><strong>' + nR + '</strong><span>Reuniones</span></button><button><strong>' + nT + '</strong><span>Tareas</span></button><button class="' + (atras.length ? 'malo' : '') + '" data-a="semana" data-s="0"><strong>' + atras.length + '</strong><span>Atrasadas</span></button></div>';
+  // Lo atrasado se ve arriba solo en la semana actual, para ponerlo al día sin buscarlo.
+  if (sem === 0 && atras.length) x += '<details' + (atras.length <= 5 ? ' open' : '') + '><summary><b>Atrasadas (' + atras.length + ')</b> <span class="gris peq">pásalas a un día de esta semana</span></summary>' + atras.slice(0, 40).map(t => tareaAgenda(t, 1)).join('') + '</details>';
+  dias.forEach(f => {
+    const r = rDia(f), t = tDia(f), esHoy = f === h, pasado = f < h;
+    x += '<h2' + (esHoy ? ' id="hoyAg"' : '') + '>' + esc(etiquetaDia(f)) + (esHoy ? ' <span class="etq oro">Hoy</span>' : '') + ' <span class="gris peq">' + (r.length || t.length ? [r.length ? r.length + (r.length === 1 ? ' reunión' : ' reuniones') : '', t.length ? t.length + (t.length === 1 ? ' tarea' : ' tareas') : ''].filter(Boolean).join(' · ') : 'Libre') + '</span></h2>';
+    x += r.map(m => tarjetaReunion(m)).join('') + t.map(k => tareaAgenda(k)).join('');
+    if (!pasado) x += '<div class="acc" style="margin-top:0"><button class="b" data-a="nuevaT" data-f="' + f + '">+ Tarea</button><button class="b" data-a="agendar" data-f="' + f + '">+ Reunión</button></div>';
+  });
+  if (sem === 0 && sinF.length) x += '<details><summary><b>Sin fecha (' + sinF.length + ')</b> <span class="gris peq">ponles un día</span></summary>' + sinF.slice(0, 40).map(t => tareaAgenda(t)).join('') + '</details>';
+  return x;
+}
+
 /* ---------- Embudo ---------- */
 function tarjetaOportunidad(o) {
   const cerr = CERRADAS.indexOf(o.e) >= 0;
@@ -435,6 +467,7 @@ const A = {
   nuevaT(el) {
     const id = el.dataset.id || '';
     dialogo('<h3>Nueva tarea</h3><label for="nd">Qué hay que hacer</label><textarea id="nd" rows="3" maxlength="500"></textarea><label for="nf">Fecha (opcional)</label><input id="nf" type="date">' + (id ? '<p class="gris">Cliente: ' + esc(nombreCli(id)) + '</p><input type="hidden" id="nc" value="' + esc(id) + '">' : '<label for="nq">Cliente (opcional)</label><input id="nq" type="search" autocomplete="off" data-e="buscarNT"><input type="hidden" id="nc"><div id="ns"></div>') + '<div id="nerr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="crearT">Guardar tarea</button></div>');
+    if (el.dataset.f) $('nf').value = el.dataset.f;
     $('nd').focus();
   },
   elegirC(el) { $('nc').value = el.dataset.id; $('nq').value = el.textContent; $('ns').innerHTML = ''; },
@@ -464,9 +497,18 @@ const A = {
     const r = (S.datos.reuniones || []).find(x => x.id === el.dataset.id), ini = new Date(f + 'T' + h + ':00');
     cerrarDialogo(); encolar('REPROGRAMAR_REUNION', { reunion: el.dataset.id, inicio: ini.toISOString(), base: r ? r.f : '' }, 'Reprogramada para ' + fmtHora(ini.toISOString()));
   },
+  semana(el) { S.semana = Number(el.dataset.s) || 0; pintar(); window.scrollTo(0, 0); },
+  moverT(el) {
+    const t = tareas().find(x => x.id === el.dataset.id); if (!t) return;
+    const h = hoy(), dias = diasSemana(S.semana || 0).filter(f => f >= h), sig = diasSemana((S.semana || 0) + 1);
+    const boton = f => '<button class="b' + (f === t.v ? ' p' : '') + '" data-a="reprogYa" data-id="' + esc(t.id) + '" data-f="' + f + '"' + (f === t.v ? ' disabled' : '') + '>' + esc(f === h ? 'Hoy' : etiquetaDia(f)) + '</button>';
+    dialogo('<h3>Mover tarea</h3><p class="gris">' + esc(t.d) + '</p><div class="acc">' + dias.map(boton).join('') + '</div><p class="gris peq" style="margin:8px 0 2px">Semana siguiente</p><div class="acc">' + sig.slice(0, 5).map(boton).join('') + '</div><label for="rf">Otra fecha</label><input id="rf" type="date" min="' + h + '"><div id="rerr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="reprogYa" data-id="' + esc(t.id) + '">Guardar fecha</button></div>');
+  },
   agendar(el) {
+    const dia = el.dataset.f && el.dataset.f >= hoy() ? el.dataset.f : masDias(1);
+    if (!el.dataset.id) { dialogo('<h3>Agendar reunión' + (el.dataset.f ? ' el ' + esc(etiquetaDia(el.dataset.f)) : '') + '</h3><label for="agq">¿Con quién?</label><input id="agq" type="search" autocomplete="off" data-e="buscarAG" data-f="' + esc(dia) + '"><div id="ags"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button></div>'); $('agq').focus(); return; }
     const c = cliente(el.dataset.id); if (!c) return; const mail = (c.mail || [])[0] || '';
-    dialogo('<h3>Agendar con ' + esc(c.n) + '</h3><label for="agt">Título</label><input id="agt" value="' + esc('Asesoría con ' + c.n) + '" maxlength="150"><label for="agf">Día</label><input id="agf" type="date" min="' + hoy() + '" value="' + masDias(1) + '"><label for="agh">Hora</label><input id="agh" type="time" value="09:00"><label for="agd">Duración</label><select id="agd"><option value="30">30 minutos</option><option value="45">45 minutos</option><option value="60" selected>1 hora</option><option value="90">1 hora y media</option></select><label class="fila"><span>Crear videollamada de Google Meet</span><input id="agm" type="checkbox" checked style="width:auto"></label>' + (mail ? '<label class="fila"><span>Enviar la invitación a ' + esc(mail) + '</span><input id="agi" type="checkbox" style="width:auto"></label>' : '<p class="gris peq">No tiene correo: la reunión queda solo en tu calendario.</p>') + '<label for="agl">O un lugar o enlace propio (opcional)</label><input id="agl" placeholder="Oficina, dirección o enlace de Zoom"><div id="agerr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="agendarYa" data-id="' + esc(c.id) + '">Agendar</button></div>');
+    dialogo('<h3>Agendar con ' + esc(c.n) + '</h3><label for="agt">Título</label><input id="agt" value="' + esc('Asesoría con ' + c.n) + '" maxlength="150"><label for="agf">Día</label><input id="agf" type="date" min="' + hoy() + '" value="' + esc(dia) + '"><label for="agh">Hora</label><input id="agh" type="time" value="09:00"><label for="agd">Duración</label><select id="agd"><option value="30">30 minutos</option><option value="45">45 minutos</option><option value="60" selected>1 hora</option><option value="90">1 hora y media</option></select><label class="fila"><span>Crear videollamada de Google Meet</span><input id="agm" type="checkbox" checked style="width:auto"></label>' + (mail ? '<label class="fila"><span>Enviar la invitación a ' + esc(mail) + '</span><input id="agi" type="checkbox" style="width:auto"></label>' : '<p class="gris peq">No tiene correo: la reunión queda solo en tu calendario.</p>') + '<label for="agl">O un lugar o enlace propio (opcional)</label><input id="agl" placeholder="Oficina, dirección o enlace de Zoom"><div id="agerr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="agendarYa" data-id="' + esc(c.id) + '">Agendar</button></div>');
   },
   agendarYa(el) {
     const f = $('agf').value, h = $('agh').value; if (!f || !h) { $('agerr').textContent = 'Elige día y hora.'; return; }
@@ -578,6 +620,7 @@ document.addEventListener('input', e => {
   const k = e.target.dataset.e;
   if (k === 'buscar') { S.busqueda = e.target.value; $('lc').innerHTML = listaCli(); }
   if (k === 'buscarU') { const q = e.target.value, yo = e.target.dataset.id; $('us').innerHTML = q.length < 2 ? '' : buscarCli(q, 8).lista.filter(c => c.id !== yo).map(c => '<button class="card tocable" data-a="confirmarU" data-ca="' + esc(yo) + '" data-cb="' + esc(c.id) + '"><b>' + esc(c.n) + '</b><br><span class="gris peq">' + esc((c.tel && c.tel[0]) || (c.mail && c.mail[0]) || '') + '</span></button>').join('') || '<p class="gris">Sin coincidencias</p>'; }
+  if (k === 'buscarAG') { const q = e.target.value, f = e.target.dataset.f; $('ags').innerHTML = q.length < 2 ? '' : buscarCli(q, 8).lista.map(c => '<button class="b" style="margin:2px" data-a="agendar" data-id="' + esc(c.id) + '" data-f="' + esc(f) + '">' + esc(c.n) + '</button>').join('') || '<p class="gris">Sin coincidencias</p>'; }
   if (k === 'buscarNO') { const q = e.target.value; $('oc').value = ''; $('os').innerHTML = q.length < 2 ? '' : buscarCli(q, 6).lista.map(c => '<button class="b" data-a="elegirO" data-id="' + esc(c.id) + '">' + esc(c.n) + '</button> ').join(''); }
   if (k === 'buscarNT') { const q = e.target.value; $('nc').value = ''; $('ns').innerHTML = q.length < 2 ? '' : buscarCli(q, 6).lista.map(c => '<button class="b" data-a="elegirC" data-id="' + esc(c.id) + '">' + esc(c.n) + '</button> ').join(''); }
 });
