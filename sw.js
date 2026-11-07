@@ -1,7 +1,8 @@
 /* Guarda solo el código de la app, nunca datos de clientes: esos van cifrados en IndexedDB. */
-const CACHE = 'oi-crm-v2';
+const CACHE = 'oi-crm-v3';
 const ARCHIVOS = ['./', 'index.html', 'app.js', 'config.js', 'estilos.css', 'manifest.webmanifest', 'icono-180.png', 'icono-192.png', 'icono-512.png'];
-self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(ARCHIVOS)).then(() => self.skipWaiting())); });
+// 'reload' baja cada archivo del servidor y no de la copia del navegador, para no instalar una versión vieja.
+self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(ARCHIVOS.map(u => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(l => Promise.all(l.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener('fetch', e => {
   const u = new URL(e.request.url);

@@ -1,6 +1,7 @@
 /* OI CRM sin conexión. Todo lo guardado en el dispositivo va cifrado con una clave derivada del PIN. */
 'use strict';
 const PASARELA = (window.OI_CONFIG || {}).pasarela || '';
+const VERSION_APP = '3';
 const ITERACIONES = 310000, MAX_FALLOS = 10, BLOQUEO_MS = 5 * 60000, ESPERA_ENVIO_MS = 7000;
 const S = { clave: null, datos: null, cola: [], sesion: null, avisos: [], ultima: '', vista: 'dia', pila: [], filtro: 'todas', busqueda: '', red: 'ok', sincronizando: false, revocado: false, ocultoDesde: 0 };
 const $ = id => document.getElementById(id);
@@ -241,7 +242,7 @@ function vSinc() {
   let x = '<div class="card"><p><b>' + (S.sincronizando ? 'Comprobando conexión…' : S.red === 'revocado' ? 'Este dispositivo fue revocado. Vuelve a vincularlo desde el CRM' : S.red === 'fuera' ? 'Sin conexión con el CRM' : 'Conectado') + '</b></p><p class="gris">Datos del CRM: ' + (gen ? esc(fmtHora(gen)) : 'sin descargar') + '<br>Última sincronización: ' + (S.ultima ? esc(fmtHora(S.ultima)) : 'nunca') + '</p><p class="gris">' + pen + ' por enviar · ' + env + ' enviados, esperando que el CRM los aplique (hasta 10 minutos)</p><button class="b p ancho" data-a="sync"' + (S.sincronizando || S.revocado ? ' disabled' : '') + '>' + (S.sincronizando ? 'Sincronizando…' : 'Sincronizar ahora') + '</button></div>';
   if (S.avisos.length) x += '<h2>Requieren tu atención</h2>' + S.avisos.map(a => '<div class="card"><span class="etq mal">' + (a.tipo === 'CONFLICTO' ? 'Conflicto' : 'No aplicado') + '</span><p>' + esc(a.texto) + '</p><p class="gris">' + esc(a.motivo) + (a.tipo === 'CONFLICTO' ? '. Quedó en Revisión del CRM.' : '') + '</p><button class="b" data-a="quitarAviso" data-id="' + esc(a.id) + '">Entendido</button></div>').join('');
   if (S.cola.length) x += '<h2>Cambios por confirmar</h2><div class="card">' + S.cola.map(c => '<div class="fila"><span>' + esc(describir(c)) + '</span><span class="gris peq">' + (c.estado === 'enviado' ? 'Enviado' : 'Por enviar') + '</span></div>').join('') + '</div>';
-  x += '<h2>Este dispositivo</h2><div class="card"><p class="gris">' + esc(S.sesion && S.sesion.nombre || '') + '</p><div class="acc"><button class="b" data-a="bloquear">Bloquear ahora</button><button class="b mal" data-a="desvincular">Borrar datos de este dispositivo</button></div></div>';
+  x += '<h2>Este dispositivo</h2><div class="card"><p class="gris">' + esc(S.sesion && S.sesion.nombre || '') + ' · Versión de la app ' + VERSION_APP + '</p><div class="acc"><button class="b" data-a="bloquear">Bloquear ahora</button><button class="b mal" data-a="desvincular">Borrar datos de este dispositivo</button></div></div>';
   return x;
 }
 
@@ -387,7 +388,13 @@ window.addEventListener('online', () => { S.red = 'ok'; sincronizar(); });
 window.addEventListener('offline', () => { S.red = 'fuera'; pintarEstado(); });
 setInterval(() => { if (S.clave && !document.hidden) sincronizar(); }, 5 * 60000);
 async function arranque() {
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });
+  if ('serviceWorker' in navigator) {
+    // Busca una versión nueva cada vez que abre y, cuando la instala, recarga una sola vez para mostrarla.
+    const yaHabia = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(r => r.update()).catch(() => { });
+    let recargada = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (yaHabia && !recargada && !S.clave) { recargada = true; location.reload(); } });
+  }
   if (!window.crypto || !crypto.subtle || !window.indexedDB) { $('raiz').innerHTML = '<div class="pantalla"><h1>Navegador no compatible</h1><p>Abre la app con una dirección https en Safari o Chrome.</p></div>'; return; }
   const sal = await kvLeer('sal');
   if (sal) pPin();
