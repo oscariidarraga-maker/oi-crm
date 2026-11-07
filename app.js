@@ -1,7 +1,7 @@
 /* OI CRM sin conexión. Todo lo guardado en el dispositivo va cifrado con una clave derivada del PIN. */
 'use strict';
 const PASARELA = (window.OI_CONFIG || {}).pasarela || '';
-const VERSION_APP = '6';
+const VERSION_APP = '7';
 const ITERACIONES = 310000, MAX_FALLOS = 10, BLOQUEO_MS = 5 * 60000, ESPERA_ENVIO_MS = 7000;
 const S = { clave: null, datos: null, cola: [], sesion: null, avisos: [], ultima: '', vista: 'dia', pila: [], filtro: 'todas', busqueda: '', red: 'ok', sincronizando: false, revocado: false, ocultoDesde: 0 };
 const $ = id => document.getElementById(id);
@@ -33,7 +33,7 @@ const urlWa = (dig, texto) => 'https://wa.me/' + dig + (texto ? '?text=' + encod
 function botonesContacto(c, contexto) {
   if (!c) return '';
   const dig = digitosWa(c);
-  return (c.tel && c.tel[0] ? '<a class="b" href="tel:' + esc(c.tel[0]) + '">Llamar</a>' : '') + (dig.length >= 8 ? '<button class="b" data-a="wa" data-id="' + esc(c.id) + '" data-ctx="' + esc(contexto || '') + '">WhatsApp</button>' : '') + (c.mail && c.mail[0] ? '<a class="b" href="mailto:' + esc(c.mail[0]) + '">Correo</a>' : '');
+  return (c.tel && c.tel[0] ? '<a class="b" href="tel:' + esc(c.tel[0]) + '" data-reg="LLAMADA" data-cli="' + esc(c.id) + '">Llamar</a>' : '') + (dig.length >= 8 ? '<button class="b" data-a="wa" data-id="' + esc(c.id) + '" data-ctx="' + esc(contexto || '') + '">WhatsApp</button>' : '') + (c.mail && c.mail[0] ? '<a class="b" href="mailto:' + esc(c.mail[0]) + '">Correo</a>' : '');
 }
 const etqInteres = p => p ? '<span class="etq' + (p >= 60 ? ' oro' : '') + '">Interés ' + p + '</span>' : '';
 
@@ -126,6 +126,11 @@ function describir(c) {
   if (c.accion === 'REGISTRAR_ABONO') return 'Abono de ' + dinero(c.datos.valor) + ' (' + String(c.datos.estado || '').toLowerCase() + ')';
   if (c.accion === 'CAMBIAR_PAGO') return 'Pago a ' + String(c.datos.estado || '').toLowerCase();
   if (c.accion === 'CREAR_CONTRATO') return 'Contrato de ' + nc(c.datos.cliente) + ' por ' + dinero(c.datos.valor, c.datos.moneda);
+  if (c.accion === 'CREAR_CASO') return 'Caso de ' + nc(c.datos.cliente) + ': ' + c.datos.asunto;
+  if (c.accion === 'CAMBIAR_CASO') return 'Caso a ' + String(c.datos.estado || '').toLowerCase().replace(/_/g, ' ');
+  if (c.accion === 'INSCRIBIR_SECUENCIA') return 'Inscribir a ' + nc(c.datos.cliente) + ' en una secuencia';
+  if (c.accion === 'DETENER_SECUENCIA') return 'Detener una secuencia';
+  if (c.accion === 'REGISTRAR_CONTACTO') return (c.datos.canal === 'LLAMADA' ? 'Llamada a ' : 'WhatsApp a ') + nc(c.datos.cliente) + (c.datos.resultado ? ': ' + c.datos.resultado : '');
   return 'Nota: ' + String(c.datos.texto || '').slice(0, 60);
 }
 async function encolar(accion, datos, mensaje, deshacer) {
@@ -200,7 +205,7 @@ const VISTAS = { dia: ['Mi día', vDia], agenda: ['Agenda', vAgenda], tareas: ['
 const NAV_CORTO = { dia: 'Hoy', agenda: 'Agenda', tareas: 'Tareas', clientes: 'Clientes', embudo: 'Embudo', cobros: 'Cobros', sinc: 'Sinc.' };
 function pintar() {
   const r = $('raiz'), ficha = S.vista === 'ficha', titulo = ficha ? (nombreCli(S.pila[S.pila.length - 1]) || 'Cliente') : VISTAS[S.vista][0];
-  r.innerHTML = '<header class="cab">' + (ficha ? '<button class="volver" data-a="volver" aria-label="Volver">‹ Volver</button>' : '') + '<b>' + esc(titulo) + '</b><button class="estado" data-a="ir" data-v="sinc" id="est"></button></header><main id="m"></main><nav class="nav" aria-label="Secciones">' + ['dia', 'agenda', 'tareas', 'clientes', 'embudo', 'cobros', 'sinc'].map(v => '<button style="font-size:11.5px;padding:14px 0" data-a="ir" data-v="' + v + '" class="' + (S.vista === v ? 'activo' : '') + '"' + (S.vista === v ? ' aria-current="page"' : '') + ' aria-label="' + VISTAS[v][0] + '">' + NAV_CORTO[v] + '</button>').join('') + '</nav>';
+  r.innerHTML = '<header class="cab">' + (ficha ? '<button class="volver" data-a="volver" aria-label="Volver">‹ Volver</button>' : '') + '<b>' + esc(titulo) + '</b><span><button class="estado" data-a="buscarTodo" aria-label="Buscar en todo">Buscar</button> <button class="estado" data-a="ir" data-v="sinc" id="est"></button></span></header><main id="m"></main><nav class="nav" aria-label="Secciones">' + ['dia', 'agenda', 'tareas', 'clientes', 'embudo', 'cobros', 'sinc'].map(v => '<button style="font-size:11.5px;padding:14px 0" data-a="ir" data-v="' + v + '" class="' + (S.vista === v ? 'activo' : '') + '"' + (S.vista === v ? ' aria-current="page"' : '') + ' aria-label="' + VISTAS[v][0] + '">' + NAV_CORTO[v] + '</button>').join('') + '</nav>';
   $('m').innerHTML = ficha ? vFicha(S.pila[S.pila.length - 1]) : VISTAS[S.vista][1]();
   pintarEstado();
 }
@@ -262,6 +267,9 @@ function vDia() {
   // Cartera: todo lo pendiente por cobrar, esté al día o no. Al tocar, los clientes con saldo.
   const sal = saldosPorCliente(), totCob = sal.reduce((s, k) => s + k.cop, 0), conVenc = sal.filter(k => k.vencidas).length, top = sal.slice(0, 3).reduce((s, k) => s + k.cop, 0);
   if (sal.length) x += '<button class="card tocable" data-a="verSaldos"><span class="gris peq">Pendiente por cobrar</span><h3 style="font-size:22px;margin:2px 0">' + dinero(totCob) + '</h3><span class="gris">En ' + sal.length + (sal.length === 1 ? ' cliente' : ' clientes') + (sal.length > 3 && totCob ? ' · ' + Math.round(top / totCob * 100) + '% en los 3 mayores' : '') + '</span>' + (conVenc ? '<br><span class="etq mal">' + conVenc + (conVenc === 1 ? ' cliente con cuotas vencidas' : ' clientes con cuotas vencidas') + '</span>' : '') + '</button>';
+  x += tarjetaMetas();
+  const ksV = casos().filter(k => k.v);
+  if (ksV.length) x += '<h2>Casos vencidos</h2>' + ksV.map(k => tarjetaCaso(k)).join('');
   if (cHoy.length) x += '<h2>Cumpleaños de hoy</h2>' + cHoy.map(x2 => tarjetaCumple(x2.c, 0)).join('');
   x += '<h2>Reuniones de hoy</h2>' + (rHoy.length ? rHoy.map(r => tarjetaReunion(r)).join('') : '<p class="gris">Ninguna reunión hoy.</p>');
   if (porConfirmar.length) x += '<h2>¿Se hicieron estas reuniones?</h2>' + porConfirmar.slice(0, 10).map(r => tarjetaReunion(r)).join('');
@@ -316,6 +324,9 @@ function vFicha(id) {
   if (futuras.length || porMarcar.length) x += '<h2>Reuniones</h2>' + futuras.map(r => tarjetaReunion(r, 1)).join('') + porMarcar.map(r => tarjetaReunion(r, 1)).join('');
   x += '<h2>Oportunidades</h2>' + ops.map(tarjetaOportunidad).join('') + '<button class="b ancho" data-a="nuevaO" data-id="' + esc(id) + '">+ Oportunidad</button>';
   const cbs = cobros(), cts = cbs.contratos.filter(k => k.cli === id), cuo = cbs.cuotas.filter(o => o.cli === id).sort((a, b) => (a.v || '').localeCompare(b.v || '')).slice(0, 4), pvs = cbs.porVerificar.filter(p => p.cli === id && (p.e !== 'CONCILIADO' || p.pend));
+  const ksF = casos().filter(k => k.cli === id && (k.abierto || k.pend)), insF = inscripciones().filter(i => i.cli === id);
+  x += '<h2>Casos de servicio</h2>' + ksF.map(k => tarjetaCaso(k, 1)).join('') + '<button class="b ancho" data-a="casoN" data-id="' + esc(id) + '">+ Caso</button>';
+  x += '<h2>Secuencias de seguimiento</h2>' + (insF.length ? insF.map(i => '<div class="card"><b>' + esc(i.n) + '</b><br><span class="gris peq">' + (i.pend ? 'Por confirmar en el CRM' : 'Paso ' + i.paso + ' de ' + i.total + ' · desde ' + fmtDia(i.ini)) + '</span>' + (i.nuevo ? '' : '<div class="acc"><button class="b" data-a="detenerS" data-id="' + esc(i.id) + '">Detener</button></div>') + '</div>').join('') : '<p class="gris">No está en ninguna secuencia.</p>') + '<button class="b ancho" data-a="inscribir" data-id="' + esc(id) + '">Inscribir en una secuencia</button>';
   x += '<h2>Contratos y pagos</h2>' + cts.map(k => tarjetaContrato(k, 1)).join('') + cuo.map(tarjetaCuota).join('') + pvs.map(tarjetaPagoPV).join('') + '<button class="b ancho" data-a="contratoN" data-id="' + esc(id) + '">+ Registrar contrato</button>';
   if ((c.df || []).length) x += '<h2>Documentos que faltan</h2><div class="card">' + c.df.map(t => '<span class="etq mal">' + esc(String(t).replace(/_/g, ' ').toLowerCase()) + '</span>').join('') + '</div>';
   x += '<h2>Tareas abiertas</h2>' + (ts.length ? ts.map(tarjetaTarea).join('') : '<p class="gris">Sin tareas abiertas.</p>');
@@ -331,10 +342,66 @@ function vSinc() {
   let x = '<div class="card"><p><b>' + (S.sincronizando ? 'Comprobando conexión…' : S.red === 'revocado' ? 'Este dispositivo fue revocado. Vuelve a vincularlo desde el CRM' : S.red === 'fuera' ? 'Sin conexión con el CRM' : 'Conectado') + '</b></p><p class="gris">Datos del CRM: ' + (gen ? esc(fmtHora(gen)) : 'sin descargar') + '<br>Última sincronización: ' + (S.ultima ? esc(fmtHora(S.ultima)) : 'nunca') + '</p><p class="gris">' + pen + ' por enviar · ' + env + ' enviados, esperando que el CRM los aplique (hasta 10 minutos)</p><button class="b p ancho" data-a="sync"' + (S.sincronizando || S.revocado ? ' disabled' : '') + '>' + (S.sincronizando ? 'Sincronizando…' : 'Sincronizar ahora') + '</button></div>';
   if (S.avisos.length) x += '<h2>Requieren tu atención</h2>' + S.avisos.map(a => '<div class="card"><span class="etq mal">' + (a.tipo === 'CONFLICTO' ? 'Conflicto' : 'No aplicado') + '</span><p>' + esc(a.texto) + '</p><p class="gris">' + esc(a.motivo) + (a.tipo === 'CONFLICTO' ? '. Quedó en Revisión del CRM.' : '') + '</p><button class="b" data-a="quitarAviso" data-id="' + esc(a.id) + '">Entendido</button></div>').join('');
   if (S.cola.length) x += '<h2>Cambios por confirmar</h2><div class="card">' + S.cola.map(c => '<div class="fila"><span>' + esc(describir(c)) + '</span><span class="gris peq">' + (c.estado === 'enviado' ? 'Enviado' : 'Por enviar') + '</span></div>').join('') + '</div>';
+  x += '<h2>Tamaño de letra</h2><div class="chips">' + [['normal', 'Normal'], ['grande', 'Grande'], ['muy', 'Muy grande']].map(z => '<button data-a="letra" data-z="' + z[0] + '" class="' + ((S.letra || 'normal') === z[0] ? 'activo' : '') + '">' + z[1] + '</button>').join('') + '</div>';
   if (S.bioPuede) x += '<h2>Face ID</h2><div class="card"><p class="gris">' + (S.bioActivo ? 'Activado: en la pantalla del PIN toca "Entrar con Face ID".' : 'Desbloquea la app con tu cara en vez de escribir el PIN.') + '</p><button class="b' + (S.bioActivo ? '' : ' p') + '" data-a="' + (S.bioActivo ? 'bioOff' : 'bioOn') + '">' + (S.bioActivo ? 'Desactivar Face ID' : 'Activar Face ID') + '</button></div>';
   x += '<h2>Este dispositivo</h2><div class="card"><p class="gris">' + esc(S.sesion && S.sesion.nombre || '') + ' · Versión de la app ' + VERSION_APP + '</p><div class="acc"><button class="b" data-a="bloquear">Bloquear ahora</button><button class="b mal" data-a="desvincular">Borrar datos de este dispositivo</button></div></div>';
   return x;
 }
+
+/* ---------- Casos, secuencias y metas ---------- */
+const EST_CASO = { ABIERTO: ['Abierto', 'oro'], EN_CURSO: ['En curso', ''], ESPERANDO_CLIENTE: ['Esperando al cliente', ''], RESUELTO: ['Resuelto', ''], CANCELADO: ['Cancelado', ''] };
+function casos() {
+  const l = ((S.datos && S.datos.casos) || []).map(k => Object.assign({}, k));
+  S.cola.forEach(q => {
+    const d = q.datos;
+    if (q.accion === 'CREAR_CASO' && !l.some(k => k.id === q.id)) l.push({ id: q.id, cli: d.cliente, a: d.asunto, d: d.detalle, p: d.prioridad, ab: q.fecha.slice(0, 10), c: d.fecha || 'FECHA_POR_DEFINIR', e: 'ABIERTO', pend: 1, nuevo: 1 });
+    else if (q.accion === 'CAMBIAR_CASO') { const k = l.find(x => x.id === d.caso); if (k) { k.e = d.estado; if (d.fecha) k.c = d.fecha; if (d.solucion) k.s = d.solucion; k.pend = 1; } }
+  });
+  const h = hoy(); l.forEach(k => { k.abierto = ['RESUELTO', 'CANCELADO'].indexOf(k.e) < 0; k.v = k.abierto && /^\d{4}/.test(k.c || '') && k.c < h ? 1 : 0; });
+  return l;
+}
+function tarjetaCaso(k, sinNombre) {
+  const st = EST_CASO[k.e] || [k.e, ''];
+  return '<div class="card"><h3>' + esc(k.a) + '</h3><span class="gris">' + (sinNombre ? '' : esc(nombreCli(k.cli)) + ' · ') + (/^\d{4}/.test(k.c || '') ? 'Prometido ' + fmtDia(k.c) : 'Sin fecha prometida') + '</span><br><span class="etq ' + (k.v ? 'mal' : st[1]) + '">' + (k.v ? 'Vencido' : st[0]) + '</span>' + (k.pend ? '<span class="etq oro">Por confirmar</span>' : '') + (k.s ? '<p class="gris peq">Solución: ' + esc(k.s) + '</p>' : '') + (k.abierto && !k.nuevo ? '<div class="acc"><button class="b" data-a="casoE" data-id="' + esc(k.id) + '">Actualizar</button></div>' : '') + '</div>';
+}
+function inscripciones() {
+  const l = ((S.datos && S.datos.inscripciones) || []).map(i => Object.assign({}, i));
+  S.cola.forEach(q => {
+    if (q.accion === 'INSCRIBIR_SECUENCIA' && !l.some(i => i.id === q.id)) { const s = ((S.datos && S.datos.secuencias) || []).find(x => x.id === q.datos.secuencia); l.push({ id: q.id, cli: q.datos.cliente, n: s ? s.n : 'Secuencia', paso: 0, total: s ? s.pasos : 0, pend: 1, nuevo: 1 }); }
+    else if (q.accion === 'DETENER_SECUENCIA') { const i = l.find(x => x.id === q.datos.inscripcion); if (i) i.detenida = 1; }
+  });
+  return l.filter(i => !i.detenida);
+}
+function tarjetaMetas() {
+  const m = S.datos && S.datos.metas; if (!m || !m.l || !m.l.some(i => i.o)) return '';
+  return '<div class="card"><span class="gris peq">Metas de ' + esc(m.p) + '</span>' + m.l.filter(i => i.o).map(i => { const pct = Math.min(100, Math.round(i.r / i.o * 100)); return '<div style="margin-top:6px"><div class="fila"><span>' + esc(i.n) + '</span><span class="gris peq">' + (i.id === 'INGRESOS' ? dinero(i.r) + ' de ' + dinero(i.o) : i.r + ' de ' + i.o) + '</span></div><div style="height:6px;border-radius:3px;background:var(--linea)"><div style="height:6px;border-radius:3px;width:' + pct + '%;background:var(--gold)"></div></div></div>'; }).join('') + '</div>';
+}
+
+/* ---------- Búsqueda en todo ---------- */
+function buscarTodo(q) {
+  const n = norm(q).trim(); if (n.length < 2) return '';
+  const hay = s => norm(s).includes(n), dig = n.replace(/\D/g, '');
+  const cl = clientes().filter(c => hay(c.n) || (c.mail || []).some(hay) || (dig.length >= 4 && (c.tel || []).some(t => t.replace(/\D/g, '').includes(dig)))).slice(0, 8);
+  const ts = tareas().filter(t => hay(t.d) || hay(t.det)).slice(0, 6), op = oportunidades().filter(o => hay(o.n)).slice(0, 6), ks = casos().filter(k => hay(k.a) || hay(k.d)).slice(0, 6);
+  const his = []; clientes().forEach(c => (c.his || []).forEach(h => { if (his.length < 6 && (hay(h.r) || hay(h.a))) his.push({ c, h }); }));
+  const grupo = (t, l, f) => l.length ? '<h4 style="margin:10px 0 4px">' + t + '</h4>' + l.map(f).join('') : '';
+  const fila = (id, a, b) => '<button class="card tocable" data-a="ficha" data-id="' + esc(id) + '"><b>' + esc(a) + '</b><br><span class="gris peq">' + esc(b) + '</span></button>';
+  const r = grupo('Clientes', cl, c => fila(c.id, c.n, (c.tel && c.tel[0]) || (c.mail && c.mail[0]) || '')) + grupo('Tareas', ts, t => t.cli ? fila(t.cli, t.d, nombreCli(t.cli) + ' · ' + fmtDia(t.v)) : '<div class="card"><b>' + esc(t.d) + '</b></div>') + grupo('Oportunidades', op, o => fila(o.cli, o.n, nombreCli(o.cli) + ' · ' + o.e)) + grupo('Casos', ks, k => fila(k.cli, k.a, nombreCli(k.cli))) + grupo('Historial', his, x => fila(x.c.id, x.c.n, fmtDia(x.h.f) + ' · ' + String(x.h.r || x.h.a).slice(0, 90)));
+  return r || '<p class="gris">Sin resultados.</p>';
+}
+
+/* ---------- Registro rápido después de llamar o escribir ---------- */
+// Al volver a la app después de tocar Llamar o WhatsApp, pregunta cómo te fue para dejarlo en el historial.
+function preguntarContacto() {
+  const p = S.contactoPend; S.contactoPend = null; if (!p || !S.clave) return;
+  const c = cliente(p.cli); if (!c || Date.now() - p.t < 8000 || Date.now() - p.t > 3 * 3600000) return;
+  const res = p.canal === 'LLAMADA' ? ['Contestó', 'No contestó', 'Volver a llamar', 'Agendamos reunión'] : ['Le escribí', 'Respondió', 'Sin respuesta', 'Agendamos reunión'];
+  dialogo('<h3>¿Cómo te fue con ' + esc(c.n) + '?</h3><p class="gris peq">' + (p.canal === 'LLAMADA' ? 'Llamada' : 'WhatsApp') + ' de hace un momento. Queda en su historial.</p><div class="chips" id="rcR">' + res.map((r, i) => '<button data-a="rcRes" data-r="' + esc(r) + '" class="' + (i === 0 ? 'activo' : '') + '">' + esc(r) + '</button>').join('') + '</div><label for="rcN">Qué hablaron (opcional)</label><textarea id="rcN" rows="3" maxlength="3000"></textarea>' + botonDictar('rcN') + '<label for="rcS">Próxima acción (opcional)</label><input id="rcS" maxlength="300" placeholder="Por ejemplo: enviar propuesta"><div class="acc"><button class="b" data-a="rcF" data-f="' + masDias(1) + '">Mañana</button><button class="b" data-a="rcF" data-f="' + masDias(3) + '">En 3 días</button><button class="b" data-a="rcF" data-f="' + masDias(7) + '">En una semana</button></div><input id="rcFe" type="date" min="' + hoy() + '"><div class="acc"><button class="b" data-a="cerrarD">Ahora no</button><button class="b p" data-a="rcGuardar" data-id="' + esc(c.id) + '" data-c="' + esc(p.canal) + '" data-t="' + new Date(p.t).toISOString() + '">Guardar</button></div>');
+}
+
+/* ---------- Dictado por voz ---------- */
+const Reconocedor = window.SpeechRecognition || window.webkitSpeechRecognition;
+function botonDictar(destino) { return '<div class="acc" style="margin-top:4px"><button class="b" data-a="dictar" data-d="' + esc(destino) + '">' + (Reconocedor ? 'Dictar' : 'Dictar con el teclado') + '</button></div>'; }
 
 /* ---------- Cobros ---------- */
 const ESTADO_PAGO = { INFORMADO: ['Informado', 'oro'], SOPORTADO: ['Con soporte', 'oro'], CONCILIADO: ['Conciliado', ''] };
@@ -549,9 +616,46 @@ const A = {
     const dig = digitosWa(c), ctx = el.dataset.ctx || '', pl = (S.datos.plantillas || []).slice();
     // Las del momento (por ejemplo, cumpleaños) van primero.
     pl.sort((a, b) => (b.s === ctx) - (a.s === ctx) || a.n.localeCompare(b.n, 'es'));
-    const op = (t, txt) => '<a class="card tocable" style="display:block;text-decoration:none;color:inherit" target="_blank" rel="noopener noreferrer" href="' + esc(urlWa(dig, txt)) + '"><b>' + esc(t) + '</b>' + (txt ? '<br><span class="gris peq">' + esc(txt.slice(0, 140)) + (txt.length > 140 ? '…' : '') + '</span>' : '') + '</a>';
+    const op = (t, txt) => '<a class="card tocable" style="display:block;text-decoration:none;color:inherit" target="_blank" rel="noopener noreferrer" data-reg="WHATSAPP" data-cli="' + esc(c.id) + '" href="' + esc(urlWa(dig, txt)) + '"><b>' + esc(t) + '</b>' + (txt ? '<br><span class="gris peq">' + esc(txt.slice(0, 140)) + (txt.length > 140 ? '…' : '') + '</span>' : '') + '</a>';
     dialogo('<h3>WhatsApp a ' + esc(c.n) + '</h3><p class="gris peq">Se abre WhatsApp con el texto escrito. Revísalo y envíalo tú.</p><div style="max-height:60vh;overflow:auto">' + op('Mensaje en blanco', '') + pl.map(p => op(p.n, rellenar(p.m, c))).join('') + '</div><div class="acc"><button class="b" data-a="cerrarD">Cerrar</button></div>');
   },
+  // ----- Búsqueda, registro rápido y dictado -----
+  buscarTodo() { dialogo('<h3>Buscar en todo</h3><input id="btq" type="search" autocomplete="off" placeholder="Nombre, teléfono, tarea, caso o algo que se habló" data-e="buscarT"><div id="btr" style="max-height:60vh;overflow:auto"></div><div class="acc"><button class="b" data-a="cerrarD">Cerrar</button></div>'); $('btq').focus(); },
+  rcRes(el) { document.querySelectorAll('#rcR button').forEach(b => b.classList.toggle('activo', b === el)); },
+  rcF(el) { $('rcFe').value = el.dataset.f; },
+  rcGuardar(el) {
+    const r = (document.querySelector('#rcR button.activo') || {}).dataset || {}, sig = $('rcS').value.trim(), nota = $('rcN').value.trim(), fe = $('rcFe').value;
+    cerrarDialogo(); encolar('REGISTRAR_CONTACTO', { cliente: el.dataset.id, canal: el.dataset.c, resultado: r.r || '', nota, cuando: el.dataset.t, siguiente: sig ? { descripcion: sig, fecha: fe } : null }, 'Contacto registrado', false);
+  },
+  dictar(el) {
+    const campo = $(el.dataset.d); if (!campo) return;
+    if (!Reconocedor) { campo.focus(); avisar('Toca el micrófono del teclado para dictar'); return; }
+    const r = new Reconocedor(); r.lang = 'es-CO'; r.interimResults = false; r.continuous = false;
+    el.disabled = true; el.textContent = 'Escuchando…';
+    r.onresult = ev => { const t = Array.from(ev.results).map(x => x[0].transcript).join(' '); campo.value = (campo.value ? campo.value.trim() + ' ' : '') + t; };
+    r.onerror = () => { campo.focus(); avisar('No se pudo dictar aquí: usa el micrófono del teclado'); };
+    r.onend = () => { el.disabled = false; el.textContent = 'Dictar'; };
+    try { r.start(); } catch (e) { r.onend(); campo.focus(); }
+  },
+  letra(el) { const z = el.dataset.z; kvPoner('letra', z).catch(() => { }); aplicarLetra(z); pintar(); },
+  // ----- Casos y secuencias -----
+  casoN(el) {
+    const c = cliente(el.dataset.id); if (!c) return;
+    dialogo('<h3>Caso de ' + esc(c.n) + '</h3><label for="ksA">Qué solicita</label><input id="ksA" maxlength="200"><label for="ksD">Detalle</label><textarea id="ksD" rows="3" maxlength="3000"></textarea>' + botonDictar('ksD') + '<label for="ksC">Canal</label><select id="ksC"><option>WHATSAPP</option><option>CORREO</option><option>LLAMADA</option><option>PRESENCIAL</option><option>OTRO</option></select><label for="ksP">Prioridad</label><select id="ksP"><option>MEDIA</option><option>ALTA</option><option>BAJA</option></select><label for="ksF">Fecha que le prometiste (opcional)</label><input id="ksF" type="date" min="' + hoy() + '"><div id="kserr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="casoNYa" data-id="' + esc(c.id) + '">Guardar caso</button></div>');
+  },
+  casoNYa(el) { const a = $('ksA').value.trim(); if (!a) { $('kserr').textContent = 'Escribe qué solicita.'; return; } cerrarDialogo(); encolar('CREAR_CASO', { cliente: el.dataset.id, asunto: a, detalle: $('ksD').value.trim(), canal: $('ksC').value, prioridad: $('ksP').value, fecha: $('ksF').value }, 'Caso registrado'); },
+  casoE(el) {
+    const k = casos().find(x => x.id === el.dataset.id); if (!k) return;
+    dialogo('<h3>Actualizar caso</h3><p class="gris">' + esc(k.a) + '</p><label for="keE">Estado</label><select id="keE">' + Object.keys(EST_CASO).map(e => '<option value="' + e + '"' + (k.e === e ? ' selected' : '') + '>' + EST_CASO[e][0] + '</option>').join('') + '</select><label for="keF">Nueva fecha prometida (opcional)</label><input id="keF" type="date" min="' + hoy() + '"><label for="keS">Cómo se resolvió (obligatorio al resolver)</label><textarea id="keS" rows="3" maxlength="3000"></textarea>' + botonDictar('keS') + '<div id="keerr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="casoEYa" data-id="' + esc(k.id) + '">Guardar</button></div>');
+  },
+  casoEYa(el) { const e = $('keE').value, s = $('keS').value.trim(); if (e === 'RESUELTO' && !s) { $('keerr').textContent = 'Escribe cómo se resolvió.'; return; } cerrarDialogo(); encolar('CAMBIAR_CASO', { caso: el.dataset.id, estado: e, solucion: s, fecha: $('keF').value }, 'Caso actualizado'); },
+  inscribir(el) {
+    const c = cliente(el.dataset.id), l = (S.datos.secuencias || []); if (!c) return;
+    if (!l.length) { avisar('Aún no hay secuencias: créalas en el CRM'); return; }
+    dialogo('<h3>Inscribir a ' + esc(c.n) + '</h3><p class="gris peq">Cada paso crea una tarea con el mensaje listo; tú lo envías. Se detiene sola si responde.</p>' + l.map(s => '<button class="b ancho" style="margin:3px 0" data-a="inscribirYa" data-id="' + esc(c.id) + '" data-s="' + esc(s.id) + '">' + esc(s.n) + ' · ' + s.pasos + ' pasos</button>').join('') + '<div class="acc"><button class="b" data-a="cerrarD">Cancelar</button></div>');
+  },
+  inscribirYa(el) { cerrarDialogo(); encolar('INSCRIBIR_SECUENCIA', { cliente: el.dataset.id, secuencia: el.dataset.s }, 'Inscrito en la secuencia'); },
+  detenerS(el) { encolar('DETENER_SECUENCIA', { inscripcion: el.dataset.id }, 'Secuencia detenida'); },
   // ----- Cobros -----
   filtroCob(el) { S.filtroCob = el.dataset.f; S.vista = 'cobros'; S.pila = []; pintar(); window.scrollTo(0, 0); },
   verSaldos() {
@@ -707,7 +811,7 @@ const A = {
   },
   async bioOff() { await kvPoner('bio', null); avisar('Face ID desactivado'); pintar(); },
   bioEntrar() { entrarBio(); },
-  nota(el) { dialogo('<h3>Nota para ' + esc(nombreCli(el.dataset.id)) + '</h3><label for="nt">Nota</label><textarea id="nt" rows="5" maxlength="3000"></textarea><div id="nterr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="guardarN" data-id="' + esc(el.dataset.id) + '">Guardar nota</button></div>'); $('nt').focus(); },
+  nota(el) { dialogo('<h3>Nota para ' + esc(nombreCli(el.dataset.id)) + '</h3><label for="nt">Nota</label><textarea id="nt" rows="5" maxlength="3000"></textarea>' + botonDictar('nt') + '<div id="nterr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="guardarN" data-id="' + esc(el.dataset.id) + '">Guardar nota</button></div>'); $('nt').focus(); },
   guardarN(el) { const t = $('nt').value.trim(); if (!t) { $('nterr').textContent = 'Escribe la nota.'; return; } cerrarDialogo(); encolar('AGREGAR_NOTA', { cliente: el.dataset.id, texto: t }, 'Nota guardada'); },
   async quitarAviso(el) { S.avisos = S.avisos.filter(a => a.id !== el.dataset.id); await guardarCola(); pintar(); },
   bloquear() { bloquear(); },
@@ -725,6 +829,7 @@ document.addEventListener('click', e => {
 document.addEventListener('input', e => {
   const k = e.target.dataset.e;
   if (k === 'buscar') { S.busqueda = e.target.value; $('lc').innerHTML = listaCli(); }
+  if (k === 'buscarT') { $('btr').innerHTML = buscarTodo(e.target.value); }
   if (k === 'buscarU') { const q = e.target.value, yo = e.target.dataset.id; $('us').innerHTML = q.length < 2 ? '' : buscarCli(q, 8).lista.filter(c => c.id !== yo).map(c => '<button class="card tocable" data-a="confirmarU" data-ca="' + esc(yo) + '" data-cb="' + esc(c.id) + '"><b>' + esc(c.n) + '</b><br><span class="gris peq">' + esc((c.tel && c.tel[0]) || (c.mail && c.mail[0]) || '') + '</span></button>').join('') || '<p class="gris">Sin coincidencias</p>'; }
   if (k === 'buscarAG') { const q = e.target.value, f = e.target.dataset.f; $('ags').innerHTML = q.length < 2 ? '' : buscarCli(q, 8).lista.map(c => '<button class="b" style="margin:2px" data-a="agendar" data-id="' + esc(c.id) + '" data-f="' + esc(f) + '">' + esc(c.n) + '</button>').join('') || '<p class="gris">Sin coincidencias</p>'; }
   if (k === 'buscarNO') { const q = e.target.value; $('oc').value = ''; $('os').innerHTML = q.length < 2 ? '' : buscarCli(q, 6).lista.map(c => '<button class="b" data-a="elegirO" data-id="' + esc(c.id) + '">' + esc(c.n) + '</button> ').join(''); }
@@ -794,11 +899,17 @@ function bloquear() {
   Object.assign(S, { clave: null, datos: null, cola: [], avisos: [], sesion: null, busqueda: '', pila: [] });
   pPin();
 }
+// Al tocar Llamar o un mensaje de WhatsApp se recuerda a quién, para preguntar cómo te fue al volver.
+document.addEventListener('click', e => { const a = e.target.closest && e.target.closest('a[data-reg]'); if (a) S.contactoPend = { cli: a.dataset.cli, canal: a.dataset.reg, t: Date.now() }; }, true);
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { S.ocultoDesde = Date.now(); return; }
   if (S.clave && S.ocultoDesde && Date.now() - S.ocultoDesde > BLOQUEO_MS) { bloquear(); return; }
   if (S.clave) sincronizar();
+  if (S.clave && S.contactoPend) setTimeout(preguntarContacto, 500);
 });
+/** Tamaño de letra elegido en este dispositivo. No es un dato sensible: se guarda sin cifrar. */
+function aplicarLetra(z) { const f = { normal: '', grande: '1.12', muy: '1.25' }[z] || ''; document.body.style.zoom = f; }
+kvLeer('letra').then(z => { S.letra = z || 'normal'; aplicarLetra(S.letra); }).catch(() => { });
 window.addEventListener('online', () => { S.red = 'ok'; sincronizar(); });
 window.addEventListener('offline', () => { S.red = 'fuera'; pintarEstado(); });
 setInterval(() => { if (S.clave && !document.hidden) sincronizar(); }, 5 * 60000);
