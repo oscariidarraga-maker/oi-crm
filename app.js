@@ -1,7 +1,7 @@
 /* OI CRM sin conexión. Todo lo guardado en el dispositivo va cifrado con una clave derivada del PIN. */
 'use strict';
 const PASARELA = (window.OI_CONFIG || {}).pasarela || '';
-const VERSION_APP = '8';
+const VERSION_APP = '9';
 const ITERACIONES = 310000, MAX_FALLOS = 10, BLOQUEO_MS = 5 * 60000, ESPERA_ENVIO_MS = 7000;
 const S = { clave: null, datos: null, cola: [], sesion: null, avisos: [], ultima: '', vista: 'dia', pila: [], filtro: 'todas', busqueda: '', red: 'ok', sincronizando: false, revocado: false, ocultoDesde: 0 };
 const $ = id => document.getElementById(id);
@@ -131,6 +131,9 @@ function describir(c) {
   if (c.accion === 'CAMBIAR_CASO') return 'Caso a ' + String(c.datos.estado || '').toLowerCase().replace(/_/g, ' ');
   if (c.accion === 'INSCRIBIR_SECUENCIA') return 'Inscribir a ' + nc(c.datos.cliente) + ' en una secuencia';
   if (c.accion === 'DETENER_SECUENCIA') return 'Detener una secuencia';
+  if (c.accion === 'CREAR_CLIENTE') return 'Nuevo cliente: ' + (c.datos.nombre || c.datos.telefono || c.datos.correo);
+  if (c.accion === 'EDITAR_TAREA') return 'Editar tarea: ' + c.datos.descripcion;
+  if (c.accion === 'REABRIR_TAREA') return 'Reabrir tarea';
   if (c.accion === 'REGISTRAR_CONTACTO') return (c.datos.canal === 'LLAMADA' ? 'Llamada a ' : 'WhatsApp a ') + nc(c.datos.cliente) + (c.datos.resultado ? ': ' + c.datos.resultado : '');
   return 'Nota: ' + String(c.datos.texto || '').slice(0, 60);
 }
@@ -163,12 +166,13 @@ const crudo = id => (S.datos ? S.datos.clientes : []).find(c => c.id === id);
 /** Clientes con las ediciones y unificaciones aún no confirmadas ya aplicadas, para verlas al instante. */
 function clientes() {
   if (!S.datos) return [];
-  const edic = {}, fuera = {};
+  const edic = {}, fuera = {}, nuevos = [];
   S.cola.forEach(q => {
     if (q.accion === 'EDITAR_CONTACTO') edic[q.datos.cliente] = Object.assign(edic[q.datos.cliente] || {}, q.datos.campos);
     else if (q.accion === 'UNIFICAR') fuera[q.datos.absorbido] = q.datos.principal;
+    else if (q.accion === 'CREAR_CLIENTE') { const d = q.datos; nuevos.push({ id: q.id, n: d.nombre || d.telefono || d.correo, tel: d.telefono ? [d.telefono] : [], mail: d.correo ? [d.correo] : [], ci: d.ciudad || '', s: d.estado || 'PROSPECTO', fu: d.fuente || 'App', not: d.nota || '', pend: 1, nuevo: 1 }); }
   });
-  return S.datos.clientes.filter(c => !fuera[c.id]).map(c => {
+  return S.datos.clientes.concat(nuevos).filter(c => !fuera[c.id]).map(c => {
     if (!edic[c.id]) return c;
     const x = Object.assign({}, c, { pend: 1 });
     Object.keys(edic[c.id]).forEach(k => { if (MAPA_CAMPOS[k]) x[MAPA_CAMPOS[k]] = edic[c.id][k]; });
@@ -177,7 +181,9 @@ function clientes() {
     return x;
   });
 }
-const cliente = id => clientes().find(c => c.id === id);
+/** Un cliente creado aquí lleva el id del cambio hasta que el CRM le da el suyo; el paquete trae la equivalencia. */
+const idReal = id => (S.datos && S.datos.appIds && S.datos.appIds[id]) || id;
+const cliente = id => { const r = idReal(id); return clientes().find(c => c.id === r); };
 const CERRADAS = ['Ganado', 'Perdido', 'Servicio finalizado'];
 /** Oportunidades abiertas, con los movimientos y las creadas sin conexión. */
 function oportunidades() {
@@ -300,7 +306,7 @@ function buscarCli(q, tope) {
 }
 function listaCli() {
   const r = buscarCli(S.busqueda, 60);
-  return '<p class="gris">' + r.total + (r.total === 1 ? ' cliente' : ' clientes') + (r.total > 60 ? '; escribe para acotar' : '') + '</p>' + (r.lista.length ? r.lista.map(c => '<button class="card tocable" data-a="ficha" data-id="' + esc(c.id) + '"><h3>' + esc(c.n) + '</h3><span class="gris">' + esc((c.tel && c.tel[0]) || (c.mail && c.mail[0]) || 'Sin datos de contacto') + (c.ci ? ' · ' + esc(c.ci) : '') + '</span></button>').join('') : '<div class="vacio">Sin coincidencias.</div>');
+  return '<p class="gris">' + r.total + (r.total === 1 ? ' cliente' : ' clientes') + (r.total > 60 ? '; escribe para acotar' : '') + '</p>' + (r.lista.length ? r.lista.map(c => '<button class="card tocable" data-a="ficha" data-id="' + esc(c.id) + '"><h3>' + esc(c.n) + '</h3><span class="gris">' + esc((c.tel && c.tel[0]) || (c.mail && c.mail[0]) || 'Sin datos de contacto') + (c.ci ? ' · ' + esc(c.ci) : '') + '</span></button>').join('') : '<div class="vacio">Sin coincidencias.' + (S.busqueda.trim() ? '<br><button class="b p" data-a="nuevoC" data-q="' + esc(S.busqueda.trim()) + '">Crear «' + esc(S.busqueda.trim()) + '»</button>' : '') + '</div>');
 }
 /** Pares que el CRM cree que son la misma persona y que siguen en los datos, sin los ya decididos aquí. */
 function repetidos() {
@@ -309,9 +315,10 @@ function repetidos() {
 }
 function vClientes() {
   const rep = repetidos().length;
-  return '<div class="acc"><button class="b" data-a="tarjeta">Escanear tarjeta</button>' + (rep ? '<button class="b" data-a="verRep">Posibles repetidos (' + rep + ')</button>' : '') + '</div><label for="q">Buscar por nombre, teléfono o correo</label><input id="q" type="search" autocomplete="off" autocapitalize="off" value="' + esc(S.busqueda) + '" data-e="buscar"><div id="lc">' + listaCli() + '</div>';
+  return '<div class="acc"><button class="b p" data-a="nuevoC">+ Nuevo cliente</button><button class="b" data-a="tarjeta">Escanear tarjeta</button>' + (rep ? '<button class="b" data-a="verRep">Posibles repetidos (' + rep + ')</button>' : '') + '</div><label for="q">Buscar por nombre, teléfono o correo</label><input id="q" type="search" autocomplete="off" autocapitalize="off" value="' + esc(S.busqueda) + '" data-e="buscar"><div id="lc">' + listaCli() + '</div>';
 }
 function vFicha(id) {
+  id = idReal(id);
   const c = cliente(id); if (!c) return '<div class="vacio">Este cliente ya no está en los datos descargados.</div>';
   const ts = tareas().filter(t => t.cli === id).sort(ordenVence), rs = reuniones().filter(r => r.cli === id).sort((a, b) => new Date(b.f) - new Date(a.f)), ops = oportunidades().filter(o => o.cli === id);
   const notas = S.cola.filter(n => n.accion === 'AGREGAR_NOTA' && n.datos.cliente === id).map(n => ({ f: n.fecha.slice(0, 10), c: 'APP', a: 'Nota', r: n.datos.texto, pend: 1 })), his = notas.concat(c.his || []);
@@ -319,7 +326,7 @@ function vFicha(id) {
   let x = '<h1>' + esc(c.n) + '</h1><span class="etq">' + esc(String(c.s || '').replace(/_/g, ' ')) + '</span>' + (c.ci ? '<span class="etq">' + esc(c.ci) + '</span>' : '') + etqInteres(c.pi) + (dc === 0 ? '<span class="etq oro">Cumple hoy</span>' : '') + String(c.et || '').split('|').map(t => t.trim()).filter(Boolean).map(t => '<span class="etq"># ' + esc(t) + '</span>').join('');
   x += '<div class="acc">' + botonesContacto(c, dc === 0 ? 'CUMPLE_HOY' : dc !== null && dc <= 7 ? 'CUMPLE_SEMANA' : '') + (car ? '<a class="b" target="_blank" rel="noopener noreferrer" href="' + esc(car) + '">Carpeta</a>' : '') + '</div>';
   x += '<div class="acc"><button class="b p" data-a="agendar" data-id="' + esc(id) + '">Agendar reunión</button><button class="b" data-a="nuevaT" data-id="' + esc(id) + '">Nueva tarea</button><button class="b" data-a="nota" data-id="' + esc(id) + '">Agregar nota</button></div>';
-  x += '<div class="acc"><button class="b" data-a="editar" data-id="' + esc(id) + '">Editar contacto</button><button class="b" data-a="foto" data-id="' + esc(id) + '">Foto de documento</button><button class="b" data-a="unificar" data-id="' + esc(id) + '">Unificar con otro</button></div>' + (c.pend ? '<p class="gris peq">Tiene cambios por confirmar en el CRM.</p>' : '');
+  x += '<div class="acc"><button class="b" data-a="editar" data-id="' + esc(id) + '">Editar contacto</button>' + (c.nuevo ? '' : '<button class="b" data-a="foto" data-id="' + esc(id) + '">Foto de documento</button><button class="b" data-a="unificar" data-id="' + esc(id) + '">Unificar con otro</button>') + '</div>' + (c.nuevo ? '<p class="gris peq">Recién creado: se guarda en el CRM al sincronizar. Ya puedes agendarle, crearle tareas o contratos; las fotos y la unificación se habilitan cuando el CRM lo confirme.</p>' : c.pend ? '<p class="gris peq">Tiene cambios por confirmar en el CRM.</p>' : '');
   const cumpleTxt = c.cu ? new Date('2000-' + c.cu + 'T12:00:00').toLocaleDateString('es-CO', { day: 'numeric', month: 'long' }) + (dc === 0 ? ' (hoy)' : dc !== null ? ' (en ' + dc + (dc === 1 ? ' día)' : ' días)') : '') : '';
   const datos = [['Teléfonos', (c.tel || []).join(', ')], ['Correos', (c.mail || []).join(', ')], ['Cumpleaños', cumpleTxt], ['Relación', c.rc], ['Llegó por', c.fu], ['Interés', c.pi ? c.pi + '/100 · ' + (c.pm || '') : ''], ['Necesidad', c.nec], ['Objeciones', c.obj], ['Próxima acción', c.pa], ['Próximo contacto', c.fp ? fmtDia(c.fp) : ''], ['Notas', c.not]].filter(d => d[1]);
   if (datos.length) x += '<h2>Datos</h2><div class="card">' + datos.map(d => '<p><b>' + d[0] + '</b><br><span class="texto">' + esc(d[1]) + '</span></p>').join('') + '</div>';
@@ -605,6 +612,45 @@ async function entrarBio() {
   catch (e) { $('perr').textContent = 'No se pudo usar Face ID. Escribe tu PIN.'; }
 }
 
+/* ---------- Contactos pegados ---------- */
+/** Mismo criterio que el CRM: solo presume Colombia cuando el número local es inequívoco. */
+function telNorm(v) {
+  const s = String(v || '').trim(), d = s.replace(/\D/g, '');
+  if (!d) return '';
+  if (/^\+|^00/.test(s)) return '+' + d.replace(/^00/, '');
+  if (d.length === 10 && d[0] === '3') return '+57' + d;
+  if (d.length === 12 && d.startsWith('57')) return '+' + d;
+  return d.length >= 11 ? '+' + d : d;
+}
+/** Saca nombre, teléfono y correo de un texto copiado: una tarjeta vCard, un número de WhatsApp o un contacto en texto. */
+function leerContacto(t) {
+  t = String(t || '').slice(0, 5000);
+  const r = { nombre: '', telefono: '', correo: '' };
+  if (/BEGIN:VCARD/i.test(t)) {
+    const lin = t.replace(/\r?\n[ \t]/g, '').split(/\r?\n/), val = l => l.slice(l.indexOf(':') + 1).trim();
+    lin.forEach(l => {
+      if (/^FN[:;]/i.test(l) && !r.nombre) r.nombre = val(l);
+      else if (/^N[:;]/i.test(l) && !r.nombre) { const p = val(l).split(';'); r.nombre = [p[1], p[2], p[0]].filter(Boolean).join(' ').trim(); }
+      else if (/^(item\d+\.)?TEL[:;]/i.test(l) && !r.telefono) r.telefono = val(l).replace(/^tel:/i, '');
+      else if (/^(item\d+\.)?EMAIL[:;]/i.test(l) && !r.correo) r.correo = val(l).toLowerCase();
+    });
+  } else {
+    const m = t.match(/[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/); if (m) r.correo = m[0].toLowerCase();
+    const tel = t.match(/\+?\d[\d\s().-]{5,18}\d/); if (tel) r.telefono = tel[0].trim();
+    const resto = t.split(/\r?\n/).map(l => l.replace(m ? m[0] : '\u0000', '').replace(tel ? tel[0] : '\u0000', '').replace(/^(nombre|name|tel[eé]fono|m[oó]vil|celular|correo|email|e-mail)\s*:?/i, '').trim()).filter(l => /\p{L}{2,}/u.test(l) && l.length <= 80 && !/https?:|www\./i.test(l));
+    r.nombre = (resto[0] || '').replace(/^[~\s]+/, ''); // WhatsApp marca con ~ a quien no está en tus contactos
+  }
+  r.telefono = telNorm(r.telefono);
+  return r;
+}
+/** Mientras se escribe un cliente nuevo, avisa si el teléfono o el correo ya son de alguien. */
+function avisoRepetido() {
+  const caja = $('nnDup'); if (!caja) return;
+  const t = telNorm($('nnT').value).replace(/\D/g, ''), m = $('nnE').value.trim().toLowerCase();
+  const ya = clientes().filter(c => (t.length >= 7 && (c.tel || []).some(x => { const d = String(x).replace(/\D/g, ''); return d && (d === t || d.endsWith(t) || t.endsWith(d)) && Math.min(d.length, t.length) >= 7; })) || (m && (c.mail || []).includes(m))).slice(0, 3);
+  caja.innerHTML = ya.length ? '<div class="card"><span class="etq oro">Ya existe</span> ' + ya.map(c => '<button class="b" data-a="ficha" data-id="' + esc(c.id) + '">' + esc(c.n) + '</button>').join(' ') + '<p class="gris peq">Si es la misma persona, ábrela y edítala. Si creas uno nuevo, el CRM le suma los datos al existente en lugar de duplicarlo.</p></div>' : '';
+}
+
 /* ---------- Diálogos ---------- */
 function dialogo(html) { cerrarDialogo(); const d = document.createElement('div'); d.className = 'dialogo'; d.setAttribute('role', 'dialog'); d.setAttribute('aria-modal', 'true'); d.innerHTML = '<div class="caja">' + html + '</div>'; document.body.appendChild(d); }
 function cerrarDialogo() { const d = document.querySelector('.dialogo'); if (d) d.remove(); }
@@ -824,6 +870,42 @@ const A = {
   async fotoYa(el) { const f = $('fdf').files[0], n = $('fdn').value.trim(), b = el; b.disabled = true; b.textContent = 'Enviando…'; if (await subirArchivo(f, 'DOCUMENTO', el.dataset.id, n)) cerrarDialogo(); else { b.disabled = false; b.textContent = 'Enviar'; } },
   tarjeta() { dialogo('<h3>Escanear tarjeta de presentación</h3><label for="tjf">Toma la foto de la tarjeta</label><input id="tjf" type="file" accept="image/*" capture="environment"><p class="gris peq">El CRM lee el nombre, el correo y el teléfono y te propone el prospecto en Revisión. Tú confirmas antes de crearlo.</p><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="tarjetaYa">Enviar</button></div>'); },
   async tarjetaYa(el) { el.disabled = true; el.textContent = 'Enviando…'; if (await subirArchivo($('tjf').files[0], 'TARJETA', '', 'Tarjeta')) cerrarDialogo(); else { el.disabled = false; el.textContent = 'Enviar'; } },
+  // ----- Nuevo cliente -----
+  nuevoC(el) {
+    const d = (el && el.dataset.q) ? leerContacto(el.dataset.q) : {};
+    const ent = (id, et, tipo, v, extra) => '<label for="' + id + '">' + et + '</label><input id="' + id + '" type="' + (tipo || 'text') + '" value="' + esc(v || '') + '"' + (extra || '') + '>';
+    dialogo('<h3>Nuevo cliente</h3><div style="max-height:64vh;overflow:auto">' +
+      '<button class="b ancho" data-a="pegarC">Pegar contacto copiado</button><p class="gris peq">Copia un número o un contacto en WhatsApp o en Teléfono y tócalo aquí: se llenan solos el nombre, el teléfono y el correo.</p>' +
+      ent('nnN', 'Nombre completo', 'text', d.nombre, ' autocapitalize="words" maxlength="150" data-e="nuevoDup"') +
+      ent('nnT', 'Teléfono o WhatsApp (con indicativo si no es de Colombia)', 'tel', d.telefono, ' data-e="nuevoDup"') +
+      ent('nnE', 'Correo', 'email', d.correo, ' autocapitalize="off" data-e="nuevoDup"') + '<div id="nnDup"></div>' +
+      ent('nnC', 'Ciudad', 'text', '', ' maxlength="80"') +
+      '<label for="nnF">¿Cómo llegó?</label><select id="nnF">' + ['WhatsApp', 'Llamada', 'Referido', 'Redes sociales', 'Evento', 'Página web', 'Otro'].map(f => '<option>' + f + '</option>').join('') + '</select>' +
+      '<label for="nnS">Estado</label><select id="nnS"><option value="PROSPECTO">Prospecto</option><option value="ACTIVO">Cliente activo</option></select>' +
+      '<label for="nnTi">Tipo</label><select id="nnTi"><option value="PERSONA">Persona</option><option value="EMPRESA">Empresa</option></select>' +
+      '<label for="nnA">¿Autorizó el tratamiento de sus datos?</label><select id="nnA"><option value="PENDIENTE">Aún no</option><option value="SI">Sí</option><option value="NO">No</option></select>' +
+      '<label for="nnO">Nota (qué necesita, de dónde viene)</label><textarea id="nnO" rows="3" maxlength="3000"></textarea>' + botonDictar('nnO') +
+      '</div><div id="nnErr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="nuevoCYa">Crear</button></div>');
+    avisoRepetido();
+  },
+  async pegarC() {
+    let t = '';
+    try { t = await navigator.clipboard.readText(); } catch (e) { }
+    if (!t) { $('nnErr').textContent = 'No se pudo leer lo copiado. Mantén presionado el campo de teléfono y elige Pegar.'; return; }
+    const d = leerContacto(t);
+    if (!d.nombre && !d.telefono && !d.correo) { $('nnErr').textContent = 'Lo copiado no tiene nombre, teléfono ni correo.'; return; }
+    if (d.nombre) $('nnN').value = d.nombre; if (d.telefono) $('nnT').value = d.telefono; if (d.correo) $('nnE').value = d.correo;
+    $('nnErr').textContent = ''; avisoRepetido();
+  },
+  nuevoCYa() {
+    const nombre = $('nnN').value.trim(), telefono = $('nnT').value.trim(), correo = $('nnE').value.trim().toLowerCase();
+    if (!nombre && !telefono && !correo) { $('nnErr').textContent = 'Escribe al menos el nombre, el teléfono o el correo.'; return; }
+    if (correo && !/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(correo)) { $('nnErr').textContent = 'Revisa el correo.'; return; }
+    if (telefono && telefono.replace(/\D/g, '').length < 7) { $('nnErr').textContent = 'Revisa el teléfono.'; return; }
+    const datos = { nombre, telefono: telNorm(telefono), correo, ciudad: $('nnC').value.trim(), fuente: $('nnF').value, estado: $('nnS').value, tipo: $('nnTi').value, autorizacion: $('nnA').value, nota: $('nnO').value.trim() };
+    cerrarDialogo();
+    encolar('CREAR_CLIENTE', datos, 'Cliente creado').then(it => { S.vistaPrevia = S.vista === 'ficha' ? S.vistaPrevia : S.vista; S.pila.push(it.id); S.vista = 'ficha'; pintar(); window.scrollTo(0, 0); });
+  },
   // ----- Unificar -----
   unificar(el) { dialogo('<h3>Unificar con otro contacto</h3><p class="gris peq">Busca el otro registro de esta misma persona.</p><input id="uq" type="search" autocomplete="off" data-e="buscarU" data-id="' + esc(el.dataset.id) + '"><div id="us"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button></div>'); $('uq').focus(); },
   confirmarU(el) {
@@ -892,6 +974,7 @@ document.addEventListener('input', e => {
   if (k === 'buscarU') { const q = e.target.value, yo = e.target.dataset.id; $('us').innerHTML = q.length < 2 ? '' : buscarCli(q, 8).lista.filter(c => c.id !== yo).map(c => '<button class="card tocable" data-a="confirmarU" data-ca="' + esc(yo) + '" data-cb="' + esc(c.id) + '"><b>' + esc(c.n) + '</b><br><span class="gris peq">' + esc((c.tel && c.tel[0]) || (c.mail && c.mail[0]) || '') + '</span></button>').join('') || '<p class="gris">Sin coincidencias</p>'; }
   if (k === 'buscarAG') { const q = e.target.value, f = e.target.dataset.f; $('ags').innerHTML = q.length < 2 ? '' : buscarCli(q, 8).lista.map(c => '<button class="b" style="margin:2px" data-a="agendar" data-id="' + esc(c.id) + '" data-f="' + esc(f) + '">' + esc(c.n) + '</button>').join('') || '<p class="gris">Sin coincidencias</p>'; }
   if (k === 'buscarNO') { const q = e.target.value; $('oc').value = ''; $('os').innerHTML = q.length < 2 ? '' : buscarCli(q, 6).lista.map(c => '<button class="b" data-a="elegirO" data-id="' + esc(c.id) + '">' + esc(c.n) + '</button> ').join(''); }
+  if (k === 'nuevoDup') avisoRepetido();
   if (k === 'buscarNT') { const q = e.target.value; $('nc').value = ''; $('ns').innerHTML = q.length < 2 ? '' : buscarCli(q, 6).lista.map(c => '<button class="b" data-a="elegirC" data-id="' + esc(c.id) + '">' + esc(c.n) + '</button> ').join(''); }
 });
 
