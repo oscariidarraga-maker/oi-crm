@@ -1,7 +1,7 @@
 /* OI CRM sin conexión. Todo lo guardado en el dispositivo va cifrado con una clave derivada del PIN. */
 'use strict';
 const PASARELA = (window.OI_CONFIG || {}).pasarela || '';
-const VERSION_APP = '5';
+const VERSION_APP = '6';
 const ITERACIONES = 310000, MAX_FALLOS = 10, BLOQUEO_MS = 5 * 60000, ESPERA_ENVIO_MS = 7000;
 const S = { clave: null, datos: null, cola: [], sesion: null, avisos: [], ultima: '', vista: 'dia', pila: [], filtro: 'todas', busqueda: '', red: 'ok', sincronizando: false, revocado: false, ocultoDesde: 0 };
 const $ = id => document.getElementById(id);
@@ -122,6 +122,10 @@ function describir(c) {
   if (c.accion === 'CREAR_OPORTUNIDAD') return 'Nueva oportunidad: ' + c.datos.nombre;
   if (c.accion === 'UNIFICAR') return 'Unificar ' + nc(c.datos.absorbido) + ' en ' + nc(c.datos.principal);
   if (c.accion === 'SON_DISTINTOS') return 'Marcar como personas distintas';
+  if (c.accion === 'REGISTRAR_PAGO') return 'Pago de ' + dinero(c.datos.valor) + ' (' + String(c.datos.estado || '').toLowerCase() + ')';
+  if (c.accion === 'REGISTRAR_ABONO') return 'Abono de ' + dinero(c.datos.valor) + ' (' + String(c.datos.estado || '').toLowerCase() + ')';
+  if (c.accion === 'CAMBIAR_PAGO') return 'Pago a ' + String(c.datos.estado || '').toLowerCase();
+  if (c.accion === 'CREAR_CONTRATO') return 'Contrato de ' + nc(c.datos.cliente) + ' por ' + dinero(c.datos.valor, c.datos.moneda);
   return 'Nota: ' + String(c.datos.texto || '').slice(0, 60);
 }
 async function encolar(accion, datos, mensaje, deshacer) {
@@ -192,11 +196,11 @@ const nombreCli = id => { const c = cliente(id); return c ? c.n : ''; };
 function ordenVence(a, b) { return (a.v || '9999').localeCompare(b.v || '9999'); }
 
 /* ---------- Pintado ---------- */
-const VISTAS = { dia: ['Mi día', vDia], agenda: ['Agenda', vAgenda], tareas: ['Tareas', vTareas], clientes: ['Clientes', vClientes], embudo: ['Embudo', vEmbudo], sinc: ['Sincronizar', vSinc] };
-const NAV_CORTO = { dia: 'Hoy', agenda: 'Agenda', tareas: 'Tareas', clientes: 'Clientes', embudo: 'Embudo', sinc: 'Sinc.' };
+const VISTAS = { dia: ['Mi día', vDia], agenda: ['Agenda', vAgenda], tareas: ['Tareas', vTareas], clientes: ['Clientes', vClientes], embudo: ['Embudo', vEmbudo], cobros: ['Cobros', vCobros], sinc: ['Sincronizar', vSinc] };
+const NAV_CORTO = { dia: 'Hoy', agenda: 'Agenda', tareas: 'Tareas', clientes: 'Clientes', embudo: 'Embudo', cobros: 'Cobros', sinc: 'Sinc.' };
 function pintar() {
   const r = $('raiz'), ficha = S.vista === 'ficha', titulo = ficha ? (nombreCli(S.pila[S.pila.length - 1]) || 'Cliente') : VISTAS[S.vista][0];
-  r.innerHTML = '<header class="cab">' + (ficha ? '<button class="volver" data-a="volver" aria-label="Volver">‹ Volver</button>' : '') + '<b>' + esc(titulo) + '</b><button class="estado" data-a="ir" data-v="sinc" id="est"></button></header><main id="m"></main><nav class="nav" aria-label="Secciones">' + ['dia', 'agenda', 'tareas', 'clientes', 'embudo', 'sinc'].map(v => '<button data-a="ir" data-v="' + v + '" class="' + (S.vista === v ? 'activo' : '') + '"' + (S.vista === v ? ' aria-current="page"' : '') + ' aria-label="' + VISTAS[v][0] + '">' + NAV_CORTO[v] + '</button>').join('') + '</nav>';
+  r.innerHTML = '<header class="cab">' + (ficha ? '<button class="volver" data-a="volver" aria-label="Volver">‹ Volver</button>' : '') + '<b>' + esc(titulo) + '</b><button class="estado" data-a="ir" data-v="sinc" id="est"></button></header><main id="m"></main><nav class="nav" aria-label="Secciones">' + ['dia', 'agenda', 'tareas', 'clientes', 'embudo', 'cobros', 'sinc'].map(v => '<button style="font-size:11.5px;padding:14px 0" data-a="ir" data-v="' + v + '" class="' + (S.vista === v ? 'activo' : '') + '"' + (S.vista === v ? ' aria-current="page"' : '') + ' aria-label="' + VISTAS[v][0] + '">' + NAV_CORTO[v] + '</button>').join('') + '</nav>';
   $('m').innerHTML = ficha ? vFicha(S.pila[S.pila.length - 1]) : VISTAS[S.vista][1]();
   pintarEstado();
 }
@@ -255,6 +259,9 @@ function vDia() {
   x += '<div class="met"><button class="' + (venc.length ? 'malo' : '') + '" data-a="filtrar" data-f="vencidas"><strong>' + venc.length + '</strong><span>Vencidas</span></button><button data-a="filtrar" data-f="hoy"><strong>' + deHoy.length + '</strong><span>Para hoy</span></button><button data-a="filtrar" data-f="todas"><strong>' + ts.length + '</strong><span>Abiertas</span></button></div>';
   const cumples = clientes().map(c => ({ c, d: diasCumple(c.cu) })).filter(x => x.d !== null && x.d <= 7).sort((a, b) => a.d - b.d || a.c.n.localeCompare(b.c.n, 'es'));
   const cHoy = cumples.filter(x => x.d === 0), cProx = cumples.filter(x => x.d > 0);
+  // Cartera: todo lo pendiente por cobrar, esté al día o no. Al tocar, los clientes con saldo.
+  const sal = saldosPorCliente(), totCob = sal.reduce((s, k) => s + k.cop, 0), conVenc = sal.filter(k => k.vencidas).length, top = sal.slice(0, 3).reduce((s, k) => s + k.cop, 0);
+  if (sal.length) x += '<button class="card tocable" data-a="verSaldos"><span class="gris peq">Pendiente por cobrar</span><h3 style="font-size:22px;margin:2px 0">' + dinero(totCob) + '</h3><span class="gris">En ' + sal.length + (sal.length === 1 ? ' cliente' : ' clientes') + (sal.length > 3 && totCob ? ' · ' + Math.round(top / totCob * 100) + '% en los 3 mayores' : '') + '</span>' + (conVenc ? '<br><span class="etq mal">' + conVenc + (conVenc === 1 ? ' cliente con cuotas vencidas' : ' clientes con cuotas vencidas') + '</span>' : '') + '</button>';
   if (cHoy.length) x += '<h2>Cumpleaños de hoy</h2>' + cHoy.map(x2 => tarjetaCumple(x2.c, 0)).join('');
   x += '<h2>Reuniones de hoy</h2>' + (rHoy.length ? rHoy.map(r => tarjetaReunion(r)).join('') : '<p class="gris">Ninguna reunión hoy.</p>');
   if (porConfirmar.length) x += '<h2>¿Se hicieron estas reuniones?</h2>' + porConfirmar.slice(0, 10).map(r => tarjetaReunion(r)).join('');
@@ -308,6 +315,8 @@ function vFicha(id) {
   const futuras = rs.filter(r => new Date(r.f).getTime() >= Date.now() - 15 * 60000 && r.e !== 'CANCELADA').reverse(), porMarcar = rs.filter(r => new Date(r.f).getTime() < Date.now() - 15 * 60000 && (r.e === 'PROGRAMADA' || r.e === 'PENDIENTE_CONFIRMAR'));
   if (futuras.length || porMarcar.length) x += '<h2>Reuniones</h2>' + futuras.map(r => tarjetaReunion(r, 1)).join('') + porMarcar.map(r => tarjetaReunion(r, 1)).join('');
   x += '<h2>Oportunidades</h2>' + ops.map(tarjetaOportunidad).join('') + '<button class="b ancho" data-a="nuevaO" data-id="' + esc(id) + '">+ Oportunidad</button>';
+  const cbs = cobros(), cts = cbs.contratos.filter(k => k.cli === id), cuo = cbs.cuotas.filter(o => o.cli === id).sort((a, b) => (a.v || '').localeCompare(b.v || '')).slice(0, 4), pvs = cbs.porVerificar.filter(p => p.cli === id && (p.e !== 'CONCILIADO' || p.pend));
+  x += '<h2>Contratos y pagos</h2>' + cts.map(k => tarjetaContrato(k, 1)).join('') + cuo.map(tarjetaCuota).join('') + pvs.map(tarjetaPagoPV).join('') + '<button class="b ancho" data-a="contratoN" data-id="' + esc(id) + '">+ Registrar contrato</button>';
   if ((c.df || []).length) x += '<h2>Documentos que faltan</h2><div class="card">' + c.df.map(t => '<span class="etq mal">' + esc(String(t).replace(/_/g, ' ').toLowerCase()) + '</span>').join('') + '</div>';
   x += '<h2>Tareas abiertas</h2>' + (ts.length ? ts.map(tarjetaTarea).join('') : '<p class="gris">Sin tareas abiertas.</p>');
   if ((c.com || []).length) x += '<h2>Compromisos</h2><div class="card">' + c.com.map(k => '<div class="fila"><span>' + esc(k.d) + '</span><span class="gris peq">' + fmtDia(k.f) + '</span></div>').join('') + '</div>';
@@ -325,6 +334,65 @@ function vSinc() {
   if (S.bioPuede) x += '<h2>Face ID</h2><div class="card"><p class="gris">' + (S.bioActivo ? 'Activado: en la pantalla del PIN toca "Entrar con Face ID".' : 'Desbloquea la app con tu cara en vez de escribir el PIN.') + '</p><button class="b' + (S.bioActivo ? '' : ' p') + '" data-a="' + (S.bioActivo ? 'bioOff' : 'bioOn') + '">' + (S.bioActivo ? 'Desactivar Face ID' : 'Activar Face ID') + '</button></div>';
   x += '<h2>Este dispositivo</h2><div class="card"><p class="gris">' + esc(S.sesion && S.sesion.nombre || '') + ' · Versión de la app ' + VERSION_APP + '</p><div class="acc"><button class="b" data-a="bloquear">Bloquear ahora</button><button class="b mal" data-a="desvincular">Borrar datos de este dispositivo</button></div></div>';
   return x;
+}
+
+/* ---------- Cobros ---------- */
+const ESTADO_PAGO = { INFORMADO: ['Informado', 'oro'], SOPORTADO: ['Con soporte', 'oro'], CONCILIADO: ['Conciliado', ''] };
+/** Cobros con los pagos, abonos y contratos registrados aquí que el CRM aún no confirma. */
+function cobros() {
+  const c = (S.datos && S.datos.cobros) || { contratos: [], cuotas: [], porVerificar: [], frecuencias: [] };
+  const ct = c.contratos.map(x => Object.assign({}, x)), cu = c.cuotas.map(x => Object.assign({}, x)), pv = c.porVerificar.map(x => Object.assign({}, x));
+  const srv = id => ((S.datos.servicios || []).find(s => s.id === id) || {}).n || 'Servicio';
+  S.cola.forEach(q => {
+    const d = q.datos;
+    if (q.accion === 'REGISTRAR_PAGO') { const o = cu.find(x => x.id === d.cuota); if (o) { o.pv += Number(d.valor) || 0; o.pend = 1; } if (o) pv.push({ id: q.id, cli: o.cli, ct: o.ct, f: d.fecha, val: Number(d.valor) || 0, m: o.m, e: d.estado, pend: 1, nuevo: 1 }); }
+    else if (q.accion === 'REGISTRAR_ABONO') { const k = ct.find(x => x.id === d.contrato); if (k) { k.pend = 1; pv.push({ id: q.id, cli: k.cli, ct: k.id, f: d.fecha, val: Number(d.valor) || 0, m: k.m, e: d.estado, pend: 1, nuevo: 1 }); } }
+    else if (q.accion === 'CAMBIAR_PAGO') { pv.filter(x => x.id === d.pago || (d.grupo && x.g === d.grupo)).forEach(p => { p.e = d.estado; p.pend = 1; }); }
+    else if (q.accion === 'CREAR_CONTRATO' && !ct.some(x => x.id === q.id)) ct.push({ id: q.id, cli: d.cliente, s: srv(d.servicio), f: d.fecha, t: Number(d.valor) || 0, p: 0, sa: Number(d.valor) || 0, m: d.moneda || 'COP', e: 'AL_DIA', px: d.primer, fr: d.frecuencia, pend: 1, nuevo: 1 });
+  });
+  return { contratos: ct, cuotas: cu, porVerificar: pv, frecuencias: c.frecuencias || [] };
+}
+/** Saldo pendiente por cliente, de todos sus contratos, esté al día o no. */
+function saldosPorCliente() {
+  const m = {};
+  cobros().contratos.filter(c => c.sa > 0).forEach(c => { const k = c.cli; m[k] = m[k] || { cli: k, cop: 0, otras: {}, vencidas: 0, contratos: 0 }; if ((c.m || 'COP') === 'COP') m[k].cop += c.sa; else m[k].otras[c.m] = (m[k].otras[c.m] || 0) + c.sa; m[k].vencidas += c.v || 0; m[k].contratos++; });
+  return Object.values(m).sort((a, b) => b.cop - a.cop);
+}
+const otrasMonedas = o => Object.keys(o || {}).map(k => dinero(o[k], k)).join(' + ');
+function tarjetaCuota(o) {
+  const falta = Math.max(0, o.val - o.ab), venc = o.v && o.v < hoy();
+  return '<div class="card"><button class="tocable" data-a="ficha" data-id="' + esc(o.cli) + '"><h3>' + esc(nombreCli(o.cli) || 'Cliente') + '</h3><span class="gris">Cuota #' + o.n + ' · ' + dinero(o.val, o.m) + (o.ab ? ' · abonado ' + dinero(o.ab, o.m) : '') + '</span><br><span class="etq' + (venc ? ' mal' : '') + '">' + (venc ? 'Vencida ' : 'Vence ') + fmtDia(o.v) + '</span>' + (o.pv ? '<span class="etq oro">' + dinero(o.pv, o.m) + ' por verificar</span>' : '') + '</button><div class="acc">' + (falta - o.pv > 0 ? '<button class="b p" data-a="pagoC" data-id="' + esc(o.id) + '">Registrar pago de ' + dinero(falta - o.pv, o.m) + '</button>' : '') + botonesContacto(cliente(o.cli)) + '</div></div>';
+}
+function tarjetaPagoPV(p) {
+  const st = ESTADO_PAGO[p.e] || [p.e, ''];
+  return '<div class="card"><h3>' + esc(nombreCli(p.cli) || 'Cliente') + '</h3><span class="gris">' + dinero(p.val, p.m) + ' · ' + fmtDia(p.f) + (p.med ? ' · ' + esc(p.med) : '') + (p.ref ? ' · ref. ' + esc(p.ref) : '') + '</span><br><span class="etq ' + st[1] + '">' + st[0] + '</span>' + (p.pend ? '<span class="etq oro">Por confirmar en el CRM</span>' : '') + '<div class="acc">' + (!p.nuevo && p.e !== 'CONCILIADO' ? '<button class="b p" data-a="verificarP" data-id="' + esc(p.id) + '">Verificar</button>' : '') + (enlace(p.sop) ? '<a class="b" target="_blank" rel="noopener noreferrer" href="' + esc(enlace(p.sop)) + '">Ver soporte</a>' : '') + '</div></div>';
+}
+function tarjetaContrato(c, sinNombre) {
+  return '<div class="card"><button class="tocable" data-a="ficha" data-id="' + esc(c.cli) + '"><h3>' + esc(sinNombre ? c.s : (nombreCli(c.cli) || 'Cliente')) + '</h3><span class="gris">' + (sinNombre ? '' : esc(c.s) + ' · ') + 'Total ' + dinero(c.t, c.m) + ' · pagado ' + dinero(c.p, c.m) + '</span><br><span class="etq' + (c.v ? ' mal' : '') + '">Saldo ' + dinero(c.sa, c.m) + '</span>' + (c.v ? '<span class="etq mal">' + c.v + (c.v === 1 ? ' cuota vencida' : ' cuotas vencidas') + '</span>' : '') + (c.px ? '<span class="etq">Próximo ' + fmtDia(c.px) + '</span>' : '') + (c.pend ? '<span class="etq oro">Por confirmar</span>' : '') + '</button>' + (c.sa > 0 && !c.nuevo ? '<div class="acc"><button class="b p" data-a="abonoC" data-id="' + esc(c.id) + '">+ Abono</button></div>' : '') + '</div>';
+}
+function vCobros() {
+  if (!S.datos) return '<div class="vacio">Aún no hay datos. Sincroniza con internet para descargarlos.</div>';
+  const c = cobros(), h = hoy(), lim = masDias(30), f = S.filtroCob || 'vencidas', sal = saldosPorCliente();
+  const totalCop = sal.reduce((s, x) => s + x.cop, 0), venc = c.cuotas.filter(o => o.v && o.v < h).sort((a, b) => a.v.localeCompare(b.v)), prox = c.cuotas.filter(o => o.v >= h && o.v <= lim).sort((a, b) => a.v.localeCompare(b.v));
+  const pv = c.porVerificar.filter(p => p.e !== 'CONCILIADO' || p.pend), cs = c.contratos.filter(x => x.sa > 0).sort((a, b) => b.sa - a.sa);
+  let x = '<div class="met"><button data-a="verSaldos"><strong style="font-size:15px">' + dinero(totalCop) + '</strong><span>Por cobrar · ' + sal.length + (sal.length === 1 ? ' cliente' : ' clientes') + '</span></button><button class="' + (venc.length ? 'malo' : '') + '" data-a="filtroCob" data-f="vencidas"><strong>' + venc.length + '</strong><span>Cuotas vencidas</span></button><button data-a="filtroCob" data-f="verificar"><strong>' + pv.length + '</strong><span>Por verificar</span></button></div>';
+  x += '<p class="gris peq">Solo un pago conciliado, verificado en tu extracto y con referencia o soporte, reduce el saldo.</p>';
+  x += '<div class="chips">' + [['vencidas', 'Vencidas (' + venc.length + ')'], ['proximas', 'Próximos 30 días (' + prox.length + ')'], ['verificar', 'Por verificar (' + pv.length + ')'], ['contratos', 'Contratos con saldo (' + cs.length + ')']].map(k => '<button data-a="filtroCob" data-f="' + k[0] + '" class="' + (f === k[0] ? 'activo' : '') + '">' + k[1] + '</button>').join('') + '</div>';
+  if (f === 'vencidas') x += venc.length ? venc.map(tarjetaCuota).join('') : '<div class="vacio">No hay cuotas vencidas.</div>';
+  else if (f === 'proximas') x += prox.length ? prox.map(tarjetaCuota).join('') : '<div class="vacio">Nada vence en los próximos 30 días.</div>';
+  else if (f === 'verificar') x += pv.length ? pv.map(tarjetaPagoPV).join('') : '<div class="vacio">No hay pagos por verificar.</div>';
+  else x += cs.length ? cs.map(k => tarjetaContrato(k)).join('') : '<div class="vacio">Ningún contrato tiene saldo.</div>';
+  return x;
+}
+/** Campos de pago comunes: valor, fecha, medio, estado, referencia y soporte. */
+function camposPago(valor) {
+  return '<label for="pgv">Valor</label><input id="pgv" type="number" min="1" inputmode="numeric" value="' + esc(valor || '') + '"><label for="pgf">Fecha</label><input id="pgf" type="date" value="' + hoy() + '"><label for="pgm">Medio</label><input id="pgm" placeholder="Transferencia, efectivo…" maxlength="60"><label for="pge">Estado</label><select id="pge"><option value="INFORMADO">Informado (aún no lo verifico)</option><option value="SOPORTADO">Con soporte, sin verificar en el extracto</option><option value="CONCILIADO">Conciliado: ya lo vi en mi extracto</option></select><label for="pgr">Referencia del comprobante</label><input id="pgr" maxlength="120"><label for="pgs">Enlace al soporte (opcional)</label><input id="pgs" type="url" placeholder="https://…">';
+}
+function leerPago(err) {
+  const v = Number($('pgv').value), e = $('pge').value, ref = $('pgr').value.trim(), sop = $('pgs').value.trim();
+  if (!(v > 0)) { $(err).textContent = 'Escribe el valor.'; return null; }
+  if (e === 'CONCILIADO' && !ref && !sop) { $(err).textContent = 'Para conciliar escribe la referencia o el enlace al soporte.'; return null; }
+  return { valor: v, fecha: $('pgf').value || hoy(), medio: $('pgm').value.trim(), estado: e, ref, soporte: sop };
 }
 
 /* ---------- Agenda de la semana ---------- */
@@ -483,6 +551,44 @@ const A = {
     pl.sort((a, b) => (b.s === ctx) - (a.s === ctx) || a.n.localeCompare(b.n, 'es'));
     const op = (t, txt) => '<a class="card tocable" style="display:block;text-decoration:none;color:inherit" target="_blank" rel="noopener noreferrer" href="' + esc(urlWa(dig, txt)) + '"><b>' + esc(t) + '</b>' + (txt ? '<br><span class="gris peq">' + esc(txt.slice(0, 140)) + (txt.length > 140 ? '…' : '') + '</span>' : '') + '</a>';
     dialogo('<h3>WhatsApp a ' + esc(c.n) + '</h3><p class="gris peq">Se abre WhatsApp con el texto escrito. Revísalo y envíalo tú.</p><div style="max-height:60vh;overflow:auto">' + op('Mensaje en blanco', '') + pl.map(p => op(p.n, rellenar(p.m, c))).join('') + '</div><div class="acc"><button class="b" data-a="cerrarD">Cerrar</button></div>');
+  },
+  // ----- Cobros -----
+  filtroCob(el) { S.filtroCob = el.dataset.f; S.vista = 'cobros'; S.pila = []; pintar(); window.scrollTo(0, 0); },
+  verSaldos() {
+    const l = saldosPorCliente(), tot = l.reduce((s, x) => s + x.cop, 0);
+    dialogo('<h3>Saldos pendientes</h3><p class="gris peq">' + dinero(tot) + ' en ' + l.length + (l.length === 1 ? ' cliente' : ' clientes') + ', estén al día o no. Ordenado de mayor a menor.</p><div style="max-height:62vh;overflow:auto">' + (l.length ? l.map(s => '<button class="card tocable" data-a="ficha" data-id="' + esc(s.cli) + '"><b>' + esc(nombreCli(s.cli) || 'Cliente') + '</b><br><span class="etq' + (s.vencidas ? ' mal' : '') + '">' + dinero(s.cop) + (otrasMonedas(s.otras) ? ' + ' + otrasMonedas(s.otras) : '') + '</span>' + (s.vencidas ? '<span class="etq mal">' + s.vencidas + (s.vencidas === 1 ? ' cuota vencida' : ' cuotas vencidas') + '</span>' : '<span class="etq">Al día</span>') + (s.contratos > 1 ? '<span class="gris peq"> ' + s.contratos + ' contratos</span>' : '') + '</button>').join('') : '<p class="gris">Nadie tiene saldo pendiente.</p>') + '</div><div class="acc"><button class="b" data-a="filtroCob" data-f="contratos">Ver en Cobros</button><button class="b" data-a="cerrarD">Cerrar</button></div>');
+  },
+  pagoC(el) {
+    const o = cobros().cuotas.find(x => x.id === el.dataset.id); if (!o) return;
+    dialogo('<h3>Pago de ' + esc(nombreCli(o.cli)) + '</h3><p class="gris">Cuota #' + o.n + ' · vence ' + fmtDia(o.v) + ' · falta ' + dinero(Math.max(0, o.val - o.ab), o.m) + '</p>' + camposPago(Math.max(0, o.val - o.ab - o.pv)) + '<div id="pgerr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="pagoCYa" data-id="' + esc(o.id) + '">Guardar pago</button></div>');
+  },
+  pagoCYa(el) { const p = leerPago('pgerr'); if (!p) return; cerrarDialogo(); encolar('REGISTRAR_PAGO', Object.assign({ cuota: el.dataset.id }, p), 'Pago registrado'); },
+  abonoC(el) {
+    const k = cobros().contratos.find(x => x.id === el.dataset.id); if (!k) return;
+    dialogo('<h3>Abono de ' + esc(nombreCli(k.cli)) + '</h3><p class="gris">' + esc(k.s) + ' · saldo ' + dinero(k.sa, k.m) + '. Se reparte entre las cuotas pendientes, de la más antigua a la más reciente.</p>' + camposPago('') + '<div id="pgerr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="abonoCYa" data-id="' + esc(k.id) + '" data-max="' + k.sa + '">Guardar abono</button></div>');
+  },
+  abonoCYa(el) { const p = leerPago('pgerr'); if (!p) return; if (p.valor > Number(el.dataset.max)) { $('pgerr').textContent = 'El abono supera el saldo.'; return; } cerrarDialogo(); encolar('REGISTRAR_ABONO', Object.assign({ contrato: el.dataset.id }, p), 'Abono registrado'); },
+  verificarP(el) {
+    const p = cobros().porVerificar.find(x => x.id === el.dataset.id); if (!p) return;
+    dialogo('<h3>Verificar pago</h3><p class="gris">' + esc(nombreCli(p.cli)) + ' · ' + dinero(p.val, p.m) + ' · ' + fmtDia(p.f) + (p.g ? '<br>Es parte de un abono: se verifica completo.' : '') + '</p><label for="vpe">Estado</label><select id="vpe"><option value="SOPORTADO"' + (p.e === 'SOPORTADO' ? ' selected' : '') + '>Con soporte, sin verificar en el extracto</option><option value="CONCILIADO">Conciliado: ya lo vi en mi extracto</option><option value="RECHAZADO">Rechazado: no llegó</option></select><label for="vpr">Referencia del comprobante</label><input id="vpr" value="' + esc(p.ref || '') + '"><label for="vps">Enlace al soporte</label><input id="vps" type="url" value="' + esc(p.sop || '') + '"><div id="vperr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="verificarPYa" data-id="' + esc(p.id) + '" data-g="' + esc(p.g || '') + '">Guardar</button></div>');
+  },
+  verificarPYa(el) {
+    const e = $('vpe').value, ref = $('vpr').value.trim(), sop = $('vps').value.trim();
+    if (e === 'CONCILIADO' && !ref && !sop) { $('vperr').textContent = 'Para conciliar escribe la referencia o el enlace al soporte.'; return; }
+    cerrarDialogo(); encolar('CAMBIAR_PAGO', { pago: el.dataset.id, grupo: el.dataset.g, estado: e, ref, soporte: sop }, e === 'CONCILIADO' ? 'Pago conciliado' : e === 'RECHAZADO' ? 'Pago marcado como rechazado' : 'Pago actualizado');
+  },
+  contratoN(el) {
+    const c = cliente(el.dataset.id); if (!c) return; const fr = cobros().frecuencias;
+    dialogo('<h3>Contrato de ' + esc(c.n) + '</h3><div style="max-height:62vh;overflow:auto"><label for="ctS">Servicio</label><select id="ctS">' + ((S.datos.servicios) || []).map(s => '<option value="' + esc(s.id) + '">' + esc(s.n) + '</option>').join('') + '</select><label for="ctF">Fecha de contratación</label><input id="ctF" type="date" value="' + hoy() + '"><label for="ctV">Valor total</label><input id="ctV" type="number" min="1" inputmode="numeric"><label for="ctM">Moneda</label><select id="ctM"><option>COP</option><option>USD</option><option>EUR</option></select><label for="ctQ">Frecuencia</label><select id="ctQ">' + fr.map(x => '<option>' + esc(x) + '</option>').join('') + '</select><label for="ctN">Número de cuotas</label><input id="ctN" type="number" min="1" value="1"><label for="ctP">Primer cobro</label><input id="ctP" type="date" value="' + hoy() + '"><label for="ctD">Días entre cuotas (solo personalizada)</label><input id="ctD" type="number" min="1">' +
+      '<h4 style="margin:14px 0 2px">Abono inicial (opcional)</h4><label for="ctAm">Cómo se aplica</label><select id="ctAm"><option value="INICIAL">Cuota inicial: las cuotas se calculan sobre el saldo</option><option value="DESCONTAR">Se descuenta de las primeras cuotas</option></select>' + camposPago('') + '</div><div id="cterr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="contratoNYa" data-id="' + esc(c.id) + '">Guardar contrato</button></div>');
+  },
+  contratoNYa(el) {
+    const v = Number($('ctV').value); if (!(v > 0)) { $('cterr').textContent = 'Escribe el valor total.'; return; }
+    if ($('ctQ').value === 'Personalizada' && !(Number($('ctD').value) > 0)) { $('cterr').textContent = 'Indica los días entre cuotas.'; return; }
+    let abono = null;
+    if (Number($('pgv').value) > 0) { abono = leerPago('cterr'); if (!abono) return; if (abono.valor > v) { $('cterr').textContent = 'El abono no puede superar el valor total.'; return; } abono.modo = $('ctAm').value; }
+    const datos = { cliente: el.dataset.id, servicio: $('ctS').value, fecha: $('ctF').value || hoy(), valor: v, moneda: $('ctM').value, frecuencia: $('ctQ').value, cuotas: Math.max(1, Number($('ctN').value) || 1), primer: $('ctP').value || hoy(), dias: $('ctD').value, abono };
+    cerrarDialogo(); encolar('CREAR_CONTRATO', datos, 'Contrato registrado' + (abono ? ' con abono' : ''));
   },
   // ----- Reuniones -----
   marcarR(el) { cerrarDialogo(); encolar('MARCAR_REUNION', { reunion: el.dataset.id, estado: el.dataset.e }, el.dataset.e === 'CELEBRADA_CONFIRMADA' ? 'Marcada como realizada' : 'Marcada: no se presentó'); },
