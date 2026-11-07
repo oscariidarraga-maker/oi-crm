@@ -1,7 +1,7 @@
 /* OI CRM sin conexión. Todo lo guardado en el dispositivo va cifrado con una clave derivada del PIN. */
 'use strict';
 const PASARELA = (window.OI_CONFIG || {}).pasarela || '';
-const VERSION_APP = '10';
+const VERSION_APP = '11';
 const ITERACIONES = 310000, MAX_FALLOS = 10, BLOQUEO_MS = 5 * 60000, ESPERA_ENVIO_MS = 7000;
 const S = { clave: null, datos: null, cola: [], sesion: null, avisos: [], ultima: '', vista: 'dia', pila: [], filtro: 'todas', busqueda: '', red: 'ok', sincronizando: false, revocado: false, ocultoDesde: 0 };
 const $ = id => document.getElementById(id);
@@ -27,7 +27,7 @@ function diasCumple(md) {
   return null;
 }
 const digitosWa = c => String((c && (c.w || (c.tel && c.tel[0]))) || '').replace(/\D/g, '');
-const rellenar = (m, c) => String(m || '').replace(/\{\{\s*nombre\s*\}\}/gi, (c && c.nn) || String((c && c.n) || '').split(/\s+/)[0] || '').replace(/\{\{\s*nombre_completo\s*\}\}/gi, (c && c.n) || '');
+const rellenar = (m, c, onb) => String(m || '').replace(/\{\{\s*enlace_onboarding\s*\}\}/gi, onb || (c && c.onb) || '').replace(/\{\{\s*nombre\s*\}\}/gi, (c && c.nn) || String((c && c.n) || '').split(/\s+/)[0] || '').replace(/\{\{\s*nombre_completo\s*\}\}/gi, (c && c.n) || '');
 const urlWa = (dig, texto) => 'https://wa.me/' + dig + (texto ? '?text=' + encodeURIComponent(texto) : '');
 /** Llamar, WhatsApp y correo en un toque. WhatsApp abre la conversación con el texto listo; el envío lo haces tú. */
 function botonesContacto(c, contexto) {
@@ -401,7 +401,7 @@ function flujos() {
 function tarjetaFlujo(f, conNombre) {
   const lista = f.et.map((x, k) => '<div class="fila"><span' + (k === f.i && f.e !== 'TERMINADO' ? ' style="font-weight:700"' : '') + '>' + (x.f ? '✓ ' : k === f.i ? '▶ ' : '· ') + esc(x.n) + '</span><span class="gris peq">' + (x.f ? fmtDia(x.f) : '') + '</span></div>').join('');
   const plTipo = s => ((S.datos.plantillas || []).filter(p => p.s === s)[0]);
-  const c = cliente(f.cli), dig = digitosWa(c), msg = (s, t) => { const p = plTipo(s); return p && dig.length >= 8 ? '<a class="b" target="_blank" rel="noopener noreferrer" data-reg="WHATSAPP" data-cli="' + esc(f.cli) + '" href="' + esc(urlWa(dig, rellenar(p.m, c))) + '">' + t + '</a>' : ''; };
+  const c = cliente(f.cli), dig = digitosWa(c), msg = (s, t) => { const p = plTipo(s); return p && dig.length >= 8 ? '<a class="b" target="_blank" rel="noopener noreferrer" data-reg="WHATSAPP" data-cli="' + esc(f.cli) + '" href="' + esc(urlWa(dig, rellenar(p.m, c, s === 'ONBOARDING' ? f.ol : ''))) + '">' + t + '</a>' : ''; };
   let acc = '';
   if (f.e === 'EN_CURSO') acc += '<button class="b p" data-a="flujoAv" data-id="' + esc(f.id) + '">Hecho: ' + esc(f.a) + '</button>';
   if (f.onb) acc += msg('ONBOARDING', 'Enviar formulario');
