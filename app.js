@@ -14,6 +14,27 @@ const fmtDia = f => { if (!f) return 'Sin fecha'; const d = new Date(f + 'T12:00
 const fmtHora = iso => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString('es-CO', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }); };
 const uuid = () => crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
 const enlace = u => /^https?:\/\//i.test(String(u || '')) ? String(u) : '';
+const mesDia = d => dos(d.getMonth() + 1) + '-' + dos(d.getDate());
+/** Días hasta el próximo cumpleaños (MM-DD). El 29 de febrero se celebra el 28 en años no bisiestos. */
+function diasCumple(md) {
+  if (!/^\d{2}-\d{2}$/.test(md || '')) return null;
+  const h = new Date(); h.setHours(0, 0, 0, 0);
+  for (let i = 0; i < 2; i++) {
+    const y = h.getFullYear() + i, bis = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0, m = md === '02-29' && !bis ? '02-28' : md;
+    const d = new Date(y + '-' + m + 'T00:00:00'); if (d >= h) return Math.round((d - h) / 86400000);
+  }
+  return null;
+}
+const digitosWa = c => String((c && (c.w || (c.tel && c.tel[0]))) || '').replace(/\D/g, '');
+const rellenar = (m, c) => String(m || '').replace(/\{\{\s*nombre\s*\}\}/gi, (c && c.nn) || String((c && c.n) || '').split(/\s+/)[0] || '').replace(/\{\{\s*nombre_completo\s*\}\}/gi, (c && c.n) || '');
+const urlWa = (dig, texto) => 'https://wa.me/' + dig + (texto ? '?text=' + encodeURIComponent(texto) : '');
+/** Llamar, WhatsApp y correo en un toque. WhatsApp abre la conversación con el texto listo; el envío lo haces tú. */
+function botonesContacto(c, contexto) {
+  if (!c) return '';
+  const dig = digitosWa(c);
+  return (c.tel && c.tel[0] ? '<a class="b" href="tel:' + esc(c.tel[0]) + '">Llamar</a>' : '') + (dig.length >= 8 ? '<button class="b" data-a="wa" data-id="' + esc(c.id) + '" data-ctx="' + esc(contexto || '') + '">WhatsApp</button>' : '') + (c.mail && c.mail[0] ? '<a class="b" href="mailto:' + esc(c.mail[0]) + '">Correo</a>' : '');
+}
+const etqInteres = p => p ? '<span class="etq' + (p >= 60 ? ' oro' : '') + '">Interés ' + p + '</span>' : '';
 
 /* ---------- Almacén cifrado ---------- */
 let bd = null;
@@ -141,7 +162,13 @@ function refrescar() {
 }
 function tarjetaTarea(t) {
   const vencida = t.v && t.v < hoy(), cn = nombreCli(t.cli);
-  return '<div class="card"><button class="tocable" data-a="verTarea" data-id="' + esc(t.id) + '"><h3>' + esc(t.d) + '</h3><span class="gris">' + esc(cn || 'Sin cliente') + '</span><br><span class="etq' + (vencida ? ' mal' : '') + '">' + (vencida ? 'Vencida ' : '') + fmtDia(t.v) + '</span>' + (t.pend ? '<span class="etq oro">Por confirmar</span>' : '') + '</button><div class="acc"><button class="b p" data-a="cerrarT" data-id="' + esc(t.id) + '">Cerrar</button><button class="b" data-a="reprog" data-id="' + esc(t.id) + '">Reprogramar</button></div></div>';
+  return '<div class="card"><button class="tocable" data-a="verTarea" data-id="' + esc(t.id) + '"><h3>' + esc(t.d) + '</h3><span class="gris">' + esc(cn || 'Sin cliente') + '</span><br><span class="etq' + (vencida ? ' mal' : '') + '">' + (vencida ? 'Vencida ' : '') + fmtDia(t.v) + '</span>' + (t.pend ? '<span class="etq oro">Por confirmar</span>' : '') + '</button><div class="acc"><button class="b p" data-a="cerrarT" data-id="' + esc(t.id) + '">Cerrar</button><button class="b" data-a="reprog" data-id="' + esc(t.id) + '">Reprogramar</button>' + botonesContacto(cliente(t.cli)) + '</div></div>';
+}
+function tarjetaCumple(c, dias) {
+  return '<div class="card"><button class="tocable" data-a="ficha" data-id="' + esc(c.id) + '"><h3>' + esc(c.n) + '</h3><span class="etq oro">' + (dias === 0 ? 'Cumple hoy' : dias === 1 ? 'Cumple mañana' : 'Cumple en ' + dias + ' días') + '</span></button><div class="acc">' + botonesContacto(c, dias === 0 ? 'CUMPLE_HOY' : 'CUMPLE_SEMANA') + '</div></div>';
+}
+function tarjetaInteres(c) {
+  return '<div class="card"><button class="tocable" data-a="ficha" data-id="' + esc(c.id) + '"><h3>' + esc(c.n) + '</h3>' + etqInteres(c.pi) + '<br><span class="gris peq">' + esc(String(c.pm || '').split(' · ').slice(0, 3).join(' · ')) + '</span></button><div class="acc">' + botonesContacto(c) + '<button class="b" data-a="nuevaT" data-id="' + esc(c.id) + '">Nueva tarea</button></div></div>';
 }
 function tarjetaReunion(r) {
   const u = enlace(r.u), cn = nombreCli(r.cli);
@@ -158,10 +185,18 @@ function vDia() {
   const rHoy = rs.filter(r => fechaLocal(new Date(r.f)) === h), rProx = rs.filter(r => fechaLocal(new Date(r.f)) !== h && fechaLocal(new Date(r.f)) <= masDias(7));
   let x = '<h1>' + esc(new Date().toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' })) + '</h1>' + avisosHtml();
   x += '<div class="met"><button class="' + (venc.length ? 'malo' : '') + '" data-a="filtrar" data-f="vencidas"><strong>' + venc.length + '</strong><span>Vencidas</span></button><button data-a="filtrar" data-f="hoy"><strong>' + deHoy.length + '</strong><span>Para hoy</span></button><button data-a="filtrar" data-f="todas"><strong>' + ts.length + '</strong><span>Abiertas</span></button></div>';
+  const cumples = clientes().map(c => ({ c, d: diasCumple(c.cu) })).filter(x => x.d !== null && x.d <= 7).sort((a, b) => a.d - b.d || a.c.n.localeCompare(b.c.n, 'es'));
+  const cHoy = cumples.filter(x => x.d === 0), cProx = cumples.filter(x => x.d > 0);
+  if (cHoy.length) x += '<h2>Cumpleaños de hoy</h2>' + cHoy.map(x2 => tarjetaCumple(x2.c, 0)).join('');
   x += '<h2>Reuniones de hoy</h2>' + (rHoy.length ? rHoy.map(tarjetaReunion).join('') : '<p class="gris">Ninguna reunión hoy.</p>');
   x += '<h2>Tareas de hoy</h2>' + (deHoy.length ? deHoy.map(tarjetaTarea).join('') : '<p class="gris">Nada programado para hoy.</p>');
   if (venc.length) x += '<h2>Vencidas</h2>' + venc.slice(0, 30).map(tarjetaTarea).join('') + (venc.length > 30 ? '<button class="b ancho" data-a="filtrar" data-f="vencidas">Ver las ' + venc.length + '</button>' : '');
+  // Los más interesados sin ninguna tarea abierta: nadie los está atendiendo.
+  const conTarea = {}; ts.forEach(t => { if (t.cli) conTarea[t.cli] = 1; });
+  const intere = clientes().filter(c => (c.pi || 0) >= 50 && !conTarea[c.id] && c.s !== 'ACTIVO' && c.s !== 'PERDIDO').sort((a, b) => b.pi - a.pi).slice(0, 5);
+  if (intere.length) x += '<h2>Interesados sin seguimiento</h2>' + intere.map(tarjetaInteres).join('');
   if (rProx.length) x += '<h2>Próximos 7 días</h2>' + rProx.map(tarjetaReunion).join('');
+  if (cProx.length) x += '<h2>Cumpleaños de la semana</h2>' + cProx.map(x2 => tarjetaCumple(x2.c, x2.d)).join('');
   return x;
 }
 const FILTROS = [['todas', 'Todas'], ['vencidas', 'Vencidas'], ['hoy', 'Hoy'], ['prox', 'Próximas'], ['sinf', 'Sin fecha'], ['sinc', 'Sin cliente']];
@@ -185,12 +220,15 @@ function vFicha(id) {
   const c = cliente(id); if (!c) return '<div class="vacio">Este cliente ya no está en los datos descargados.</div>';
   const ts = tareas().filter(t => t.cli === id).sort(ordenVence), rs = (S.datos.reuniones || []).filter(r => r.cli === id).sort((a, b) => new Date(b.f) - new Date(a.f));
   const notas = S.cola.filter(n => n.accion === 'AGREGAR_NOTA' && n.datos.cliente === id).map(n => ({ f: n.fecha.slice(0, 10), c: 'APP', a: 'Nota', r: n.datos.texto, pend: 1 })), his = notas.concat(c.his || []);
-  const digW = String(c.w || (c.tel && c.tel[0]) || '').replace(/\D/g, '');
-  let x = '<h1>' + esc(c.n) + '</h1><span class="etq">' + esc(String(c.s || '').replace(/_/g, ' ')) + '</span>' + (c.ci ? '<span class="etq">' + esc(c.ci) + '</span>' : '');
-  x += '<div class="acc">' + (c.tel && c.tel[0] ? '<a class="b" href="tel:' + esc(c.tel[0]) + '">Llamar</a>' : '') + (digW.length >= 8 ? '<a class="b" target="_blank" rel="noopener noreferrer" href="https://wa.me/' + esc(digW) + '">WhatsApp</a>' : '') + (c.mail && c.mail[0] ? '<a class="b" href="mailto:' + esc(c.mail[0]) + '">Correo</a>' : '') + '</div>';
+  const dc = diasCumple(c.cu), car = enlace(c.car);
+  let x = '<h1>' + esc(c.n) + '</h1><span class="etq">' + esc(String(c.s || '').replace(/_/g, ' ')) + '</span>' + (c.ci ? '<span class="etq">' + esc(c.ci) + '</span>' : '') + etqInteres(c.pi) + (dc === 0 ? '<span class="etq oro">Cumple hoy</span>' : '') + String(c.et || '').split('|').map(t => t.trim()).filter(Boolean).map(t => '<span class="etq"># ' + esc(t) + '</span>').join('');
+  x += '<div class="acc">' + botonesContacto(c, dc === 0 ? 'CUMPLE_HOY' : dc !== null && dc <= 7 ? 'CUMPLE_SEMANA' : '') + (car ? '<a class="b" target="_blank" rel="noopener noreferrer" href="' + esc(car) + '">Carpeta</a>' : '') + '</div>';
   x += '<div class="acc"><button class="b p" data-a="nuevaT" data-id="' + esc(id) + '">Nueva tarea</button><button class="b" data-a="nota" data-id="' + esc(id) + '">Agregar nota</button></div>';
-  const datos = [['Teléfonos', (c.tel || []).join(', ')], ['Correos', (c.mail || []).join(', ')], ['Necesidad', c.nec], ['Objeciones', c.obj], ['Próxima acción', c.pa], ['Próximo contacto', c.fp ? fmtDia(c.fp) : ''], ['Notas', c.not]].filter(d => d[1]);
+  const cumpleTxt = c.cu ? new Date('2000-' + c.cu + 'T12:00:00').toLocaleDateString('es-CO', { day: 'numeric', month: 'long' }) + (dc === 0 ? ' (hoy)' : dc !== null ? ' (en ' + dc + (dc === 1 ? ' día)' : ' días)') : '') : '';
+  const datos = [['Teléfonos', (c.tel || []).join(', ')], ['Correos', (c.mail || []).join(', ')], ['Cumpleaños', cumpleTxt], ['Relación', c.rc], ['Llegó por', c.fu], ['Interés', c.pi ? c.pi + '/100 · ' + (c.pm || '') : ''], ['Necesidad', c.nec], ['Objeciones', c.obj], ['Próxima acción', c.pa], ['Próximo contacto', c.fp ? fmtDia(c.fp) : ''], ['Notas', c.not]].filter(d => d[1]);
   if (datos.length) x += '<h2>Datos</h2><div class="card">' + datos.map(d => '<p><b>' + d[0] + '</b><br><span class="texto">' + esc(d[1]) + '</span></p>').join('') + '</div>';
+  if (c.pp || c.pf) x += '<h2>Perfil</h2><div class="card">' + (c.pp ? '<p><b>Pensional</b><br><span class="texto">' + esc(c.pp) + '</span></p>' : '') + (c.pf ? '<p><b>Financiero</b><br><span class="texto">' + esc(c.pf) + '</span></p>' : '') + '</div>';
+  if ((c.doc || []).length || c.ce) x += '<h2>Expediente</h2><div class="card">' + (c.ce ? '<p class="gris">' + (c.ce === 'VERIFICADA' ? 'Carpeta vinculada' : 'Carpeta con ruta histórica sin verificar') + '</p>' : '') + (c.doc || []).map(d => { const u = enlace(d.u); return '<div class="fila"><span>' + (u ? '<a target="_blank" rel="noopener noreferrer" href="' + esc(u) + '">' + esc(d.n || 'Documento') + '</a>' : esc(d.n || 'Documento')) + (d.t ? ' <span class="gris peq">' + esc(String(d.t).replace(/_/g, ' ').toLowerCase()) + '</span>' : '') + '</span><span class="gris peq">' + (d.f ? fmtDia(d.f) : '') + '</span></div>'; }).join('') + '</div>';
   x += '<h2>Tareas abiertas</h2>' + (ts.length ? ts.map(tarjetaTarea).join('') : '<p class="gris">Sin tareas abiertas.</p>');
   if ((c.com || []).length) x += '<h2>Compromisos</h2><div class="card">' + c.com.map(k => '<div class="fila"><span>' + esc(k.d) + '</span><span class="gris peq">' + fmtDia(k.f) + '</span></div>').join('') + '</div>';
   if ((c.res || []).length) x += '<h2>Resúmenes de reuniones</h2><div class="card">' + c.res.map(r => { const u = enlace(r.u); return '<details><summary>' + esc(r.t) + ' · ' + fmtDia(r.f) + '</summary><p class="texto">' + esc(r.ej) + '</p>' + (r.n ? '<p><b>Necesidades</b><br>' + esc(r.n) + '</p>' : '') + (r.o ? '<p><b>Objeciones</b><br>' + esc(r.o) + '</p>' : '') + (r.p ? '<p><b>Próximos pasos</b><br>' + esc(r.p) + '</p>' : '') + (u ? '<a class="b" target="_blank" rel="noopener noreferrer" href="' + esc(u) + '">Ver grabación</a>' : '') + '</details>'; }).join('') + '</div>';
@@ -250,6 +288,14 @@ const A = {
     const d = $('nd').value.trim(); if (!d) { $('nerr').textContent = 'Escribe la tarea.'; return; }
     const datos = { id: 'APP-' + uuid(), descripcion: d, fecha: $('nf').value, cliente: $('nc').value };
     cerrarDialogo(); encolar('CREAR_TAREA', datos, 'Tarea creada');
+  },
+  wa(el) {
+    const c = cliente(el.dataset.id); if (!c) return;
+    const dig = digitosWa(c), ctx = el.dataset.ctx || '', pl = (S.datos.plantillas || []).slice();
+    // Las del momento (por ejemplo, cumpleaños) van primero.
+    pl.sort((a, b) => (b.s === ctx) - (a.s === ctx) || a.n.localeCompare(b.n, 'es'));
+    const op = (t, txt) => '<a class="card tocable" style="display:block;text-decoration:none;color:inherit" target="_blank" rel="noopener noreferrer" href="' + esc(urlWa(dig, txt)) + '"><b>' + esc(t) + '</b>' + (txt ? '<br><span class="gris peq">' + esc(txt.slice(0, 140)) + (txt.length > 140 ? '…' : '') + '</span>' : '') + '</a>';
+    dialogo('<h3>WhatsApp a ' + esc(c.n) + '</h3><p class="gris peq">Se abre WhatsApp con el texto escrito. Revísalo y envíalo tú.</p><div style="max-height:60vh;overflow:auto">' + op('Mensaje en blanco', '') + pl.map(p => op(p.n, rellenar(p.m, c))).join('') + '</div><div class="acc"><button class="b" data-a="cerrarD">Cerrar</button></div>');
   },
   nota(el) { dialogo('<h3>Nota para ' + esc(nombreCli(el.dataset.id)) + '</h3><label for="nt">Nota</label><textarea id="nt" rows="5" maxlength="3000"></textarea><div id="nterr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="guardarN" data-id="' + esc(el.dataset.id) + '">Guardar nota</button></div>'); $('nt').focus(); },
   guardarN(el) { const t = $('nt').value.trim(); if (!t) { $('nterr').textContent = 'Escribe la nota.'; return; } cerrarDialogo(); encolar('AGREGAR_NOTA', { cliente: el.dataset.id, texto: t }, 'Nota guardada'); },
