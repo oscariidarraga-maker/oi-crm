@@ -1,7 +1,7 @@
 /* OI CRM sin conexión. Todo lo guardado en el dispositivo va cifrado con una clave derivada del PIN. */
 'use strict';
 const PASARELA = (window.OI_CONFIG || {}).pasarela || '';
-const VERSION_APP = '7';
+const VERSION_APP = '8';
 const ITERACIONES = 310000, MAX_FALLOS = 10, BLOQUEO_MS = 5 * 60000, ESPERA_ENVIO_MS = 7000;
 const S = { clave: null, datos: null, cola: [], sesion: null, avisos: [], ultima: '', vista: 'dia', pila: [], filtro: 'todas', busqueda: '', red: 'ok', sincronizando: false, revocado: false, ocultoDesde: 0 };
 const $ = id => document.getElementById(id);
@@ -126,6 +126,7 @@ function describir(c) {
   if (c.accion === 'REGISTRAR_ABONO') return 'Abono de ' + dinero(c.datos.valor) + ' (' + String(c.datos.estado || '').toLowerCase() + ')';
   if (c.accion === 'CAMBIAR_PAGO') return 'Pago a ' + String(c.datos.estado || '').toLowerCase();
   if (c.accion === 'CREAR_CONTRATO') return 'Contrato de ' + nc(c.datos.cliente) + ' por ' + dinero(c.datos.valor, c.datos.moneda);
+  if (c.accion === 'CAMBIAR_FLUJO') { const f = ((S.datos && S.datos.flujos) || []).find(x => x.id === c.datos.flujo); return ({ AVANZAR: 'Hecho: ', RETROCEDER: 'Deshacer paso: ', PAUSAR: 'Pausar: ', REANUDAR: 'Reanudar: ' }[c.datos.accion] || '') + (f ? f.a + ' · ' + nc(f.cli) : 'servicio'); }
   if (c.accion === 'CREAR_CASO') return 'Caso de ' + nc(c.datos.cliente) + ': ' + c.datos.asunto;
   if (c.accion === 'CAMBIAR_CASO') return 'Caso a ' + String(c.datos.estado || '').toLowerCase().replace(/_/g, ' ');
   if (c.accion === 'INSCRIBIR_SECUENCIA') return 'Inscribir a ' + nc(c.datos.cliente) + ' en una secuencia';
@@ -151,6 +152,8 @@ function tareas() {
     if (c.accion === 'CERRAR_TAREA') l = l.filter(t => t.id !== c.datos.id);
     else if (c.accion === 'REPROGRAMAR_TAREA') { const t = l.find(x => x.id === c.datos.id); if (t) { t.v = c.datos.fecha; t.r = (t.r || 0) + 1; t.pend = 1; } }
     else if (c.accion === 'CREAR_TAREA' && !l.some(t => t.id === c.datos.id)) l.push({ id: c.datos.id, cli: c.datos.cliente || '', d: c.datos.descripcion, det: c.datos.detalle || '', v: c.datos.fecha || '', p: 'MEDIA', f: 'APP', pend: 1 });
+    else if (c.accion === 'EDITAR_TAREA') { const t = l.find(x => x.id === c.datos.id); if (t) { t.d = c.datos.descripcion; t.det = c.datos.detalle; t.v = c.datos.fecha; t.p = c.datos.prioridad; if (c.datos.cliente !== undefined) t.cli = c.datos.cliente; t.pend = 1; } }
+    else if (c.accion === 'REABRIR_TAREA' && !l.some(t => t.id === c.datos.id)) { const k = ((S.datos && S.datos.cerradas) || []).find(x => x.id === c.datos.id); if (k) l.push({ id: k.id, cli: k.cli, d: k.d, v: '', p: 'MEDIA', pend: 1 }); }
   });
   return l;
 }
@@ -270,6 +273,8 @@ function vDia() {
   x += tarjetaMetas();
   const ksV = casos().filter(k => k.v);
   if (ksV.length) x += '<h2>Casos vencidos</h2>' + ksV.map(k => tarjetaCaso(k)).join('');
+  const flA = flujos().filter(f => f.at && f.e === 'EN_CURSO');
+  if (flA.length) x += '<h2>Servicios atrasados</h2>' + flA.map(f => tarjetaFlujo(f, 1)).join('');
   if (cHoy.length) x += '<h2>Cumpleaños de hoy</h2>' + cHoy.map(x2 => tarjetaCumple(x2.c, 0)).join('');
   x += '<h2>Reuniones de hoy</h2>' + (rHoy.length ? rHoy.map(r => tarjetaReunion(r)).join('') : '<p class="gris">Ninguna reunión hoy.</p>');
   if (porConfirmar.length) x += '<h2>¿Se hicieron estas reuniones?</h2>' + porConfirmar.slice(0, 10).map(r => tarjetaReunion(r)).join('');
@@ -324,6 +329,8 @@ function vFicha(id) {
   if (futuras.length || porMarcar.length) x += '<h2>Reuniones</h2>' + futuras.map(r => tarjetaReunion(r, 1)).join('') + porMarcar.map(r => tarjetaReunion(r, 1)).join('');
   x += '<h2>Oportunidades</h2>' + ops.map(tarjetaOportunidad).join('') + '<button class="b ancho" data-a="nuevaO" data-id="' + esc(id) + '">+ Oportunidad</button>';
   const cbs = cobros(), cts = cbs.contratos.filter(k => k.cli === id), cuo = cbs.cuotas.filter(o => o.cli === id).sort((a, b) => (a.v || '').localeCompare(b.v || '')).slice(0, 4), pvs = cbs.porVerificar.filter(p => p.cli === id && (p.e !== 'CONCILIADO' || p.pend));
+  const flF = flujos().filter(f => f.cli === id);
+  if (flF.length) x += '<h2>Avance del servicio</h2>' + flF.map(f => tarjetaFlujo(f)).join('');
   const ksF = casos().filter(k => k.cli === id && (k.abierto || k.pend)), insF = inscripciones().filter(i => i.cli === id);
   x += '<h2>Casos de servicio</h2>' + ksF.map(k => tarjetaCaso(k, 1)).join('') + '<button class="b ancho" data-a="casoN" data-id="' + esc(id) + '">+ Caso</button>';
   x += '<h2>Secuencias de seguimiento</h2>' + (insF.length ? insF.map(i => '<div class="card"><b>' + esc(i.n) + '</b><br><span class="gris peq">' + (i.pend ? 'Por confirmar en el CRM' : 'Paso ' + i.paso + ' de ' + i.total + ' · desde ' + fmtDia(i.ini)) + '</span>' + (i.nuevo ? '' : '<div class="acc"><button class="b" data-a="detenerS" data-id="' + esc(i.id) + '">Detener</button></div>') + '</div>').join('') : '<p class="gris">No está en ninguna secuencia.</p>') + '<button class="b ancho" data-a="inscribir" data-id="' + esc(id) + '">Inscribir en una secuencia</button>';
@@ -346,6 +353,30 @@ function vSinc() {
   if (S.bioPuede) x += '<h2>Face ID</h2><div class="card"><p class="gris">' + (S.bioActivo ? 'Activado: en la pantalla del PIN toca "Entrar con Face ID".' : 'Desbloquea la app con tu cara en vez de escribir el PIN.') + '</p><button class="b' + (S.bioActivo ? '' : ' p') + '" data-a="' + (S.bioActivo ? 'bioOff' : 'bioOn') + '">' + (S.bioActivo ? 'Desactivar Face ID' : 'Activar Face ID') + '</button></div>';
   x += '<h2>Este dispositivo</h2><div class="card"><p class="gris">' + esc(S.sesion && S.sesion.nombre || '') + ' · Versión de la app ' + VERSION_APP + '</p><div class="acc"><button class="b" data-a="bloquear">Bloquear ahora</button><button class="b mal" data-a="desvincular">Borrar datos de este dispositivo</button></div></div>';
   return x;
+}
+
+/* ---------- Flujo de servicio ---------- */
+function flujos() {
+  const l = ((S.datos && S.datos.flujos) || []).map(f => Object.assign({}, f, { et: (f.et || []).map(x => Object.assign({}, x)) }));
+  S.cola.forEach(q => {
+    if (q.accion !== 'CAMBIAR_FLUJO') return; const f = l.find(x => x.id === q.datos.flujo); if (!f) return;
+    f.pend = 1;
+    if (q.datos.accion === 'AVANZAR' && f.et[f.i]) { f.et[f.i].f = q.fecha.slice(0, 10); f.i++; f.d = 0; f.at = 0; const s = f.et[f.i]; f.a = s ? s.n : 'Terminado'; if (!s) f.e = 'TERMINADO'; f.onb = 0; }
+    else if (q.datos.accion === 'RETROCEDER' && f.i > 0) { f.i--; f.et[f.i].f = ''; f.a = f.et[f.i].n; f.e = 'EN_CURSO'; }
+    else if (q.datos.accion === 'PAUSAR') f.e = 'PAUSADO'; else if (q.datos.accion === 'REANUDAR') f.e = 'EN_CURSO';
+  });
+  return l;
+}
+function tarjetaFlujo(f, conNombre) {
+  const lista = f.et.map((x, k) => '<div class="fila"><span' + (k === f.i && f.e !== 'TERMINADO' ? ' style="font-weight:700"' : '') + '>' + (x.f ? '✓ ' : k === f.i ? '▶ ' : '· ') + esc(x.n) + '</span><span class="gris peq">' + (x.f ? fmtDia(x.f) : '') + '</span></div>').join('');
+  const plTipo = s => ((S.datos.plantillas || []).filter(p => p.s === s)[0]);
+  const c = cliente(f.cli), dig = digitosWa(c), msg = (s, t) => { const p = plTipo(s); return p && dig.length >= 8 ? '<a class="b" target="_blank" rel="noopener noreferrer" data-reg="WHATSAPP" data-cli="' + esc(f.cli) + '" href="' + esc(urlWa(dig, rellenar(p.m, c))) + '">' + t + '</a>' : ''; };
+  let acc = '';
+  if (f.e === 'EN_CURSO') acc += '<button class="b p" data-a="flujoAv" data-id="' + esc(f.id) + '">Hecho: ' + esc(f.a) + '</button>';
+  if (f.onb) acc += msg('ONBOARDING', 'Enviar formulario');
+  if (f.res) acc += msg('RESENA', 'Pedir reseña');
+  if (f.e === 'PAUSADO') acc += '<button class="b" data-a="flujoAcc" data-id="' + esc(f.id) + '" data-x="REANUDAR">Reanudar</button>';
+  return '<div class="card"><h3>' + esc(conNombre ? (nombreCli(f.cli) + ' · ' + f.s) : f.s) + '</h3><span class="etq' + (f.at ? ' mal' : f.e === 'TERMINADO' ? '' : ' oro') + '">' + (f.e === 'TERMINADO' ? 'Terminado' : f.e === 'PAUSADO' ? 'Pausado' : (f.at ? 'Atrasado · ' : '') + esc(f.a)) + '</span>' + (f.e === 'EN_CURSO' && !f.pend ? '<span class="gris peq"> ' + f.d + ' de ' + f.p + ' días</span>' : '') + (f.pend ? '<span class="etq oro">Por confirmar</span>' : '') + '<details style="margin-top:6px"><summary class="gris peq">Ver las ' + f.t + ' etapas</summary>' + lista + '</details><div class="acc">' + acc + '</div></div>';
 }
 
 /* ---------- Casos, secuencias y metas ---------- */
@@ -502,6 +533,14 @@ function etapasAbiertas() { return ((S.datos && S.datos.etapas) || []).filter(e 
 function siguienteEtapa(e) { const l = etapasAbiertas(), i = l.indexOf(e); return i >= 0 && i < l.length - 1 ? l[i + 1] : 'Ganado'; }
 function vEmbudo() {
   if (!S.datos) return '<div class="vacio">Aún no hay datos. Sincroniza con internet para descargarlos.</div>';
+  const modo = '<div class="chips"><button data-a="modoEmb" data-m="ventas" class="' + (S.modoEmb !== 'serv' ? 'activo' : '') + '">Ventas</button><button data-a="modoEmb" data-m="serv" class="' + (S.modoEmb === 'serv' ? 'activo' : '') + '">Servicios en curso</button></div>';
+  if (S.modoEmb === 'serv') {
+    const fl = flujos(), act = fl.filter(f => f.e === 'EN_CURSO'), atr = act.filter(f => f.at);
+    return modo + '<div class="met"><button><strong>' + act.length + '</strong><span>En curso</span></button><button class="' + (atr.length ? 'malo' : '') + '"><strong>' + atr.length + '</strong><span>Atrasados</span></button><button><strong>' + fl.filter(f => f.e === 'TERMINADO').length + '</strong><span>Terminados</span></button></div>' + (fl.length ? fl.slice().sort((a, b) => (b.at - a.at) || (a.i - b.i)).map(f => tarjetaFlujo(f, 1)).join('') : '<div class="vacio">No hay servicios en curso. Se crean al registrar un contrato.</div>');
+  }
+  return modo + vEmbudoVentas();
+}
+function vEmbudoVentas() {
   const ops = oportunidades(), et = etapasAbiertas(), abiertas = ops.filter(o => CERRADAS.indexOf(o.e) < 0);
   const tot = abiertas.reduce((s, o) => s + (o.m === 'COP' || !o.m ? o.v || 0 : 0), 0), f = S.etapa || '';
   let x = '<div class="met"><button><strong>' + abiertas.length + '</strong><span>Abiertas</span></button><button><strong style="font-size:15px">' + dinero(tot) + '</strong><span>Valor en COP</span></button></div>';
@@ -594,10 +633,22 @@ const A = {
     cerrarDialogo();
     encolar('REPROGRAMAR_TAREA', { id: el.dataset.id, fecha: f, base: previo ? previo.datos.fecha : (orig ? orig.v : '') }, 'Reprogramada para ' + fmtDia(f));
   },
+  editarT(el) {
+    const t = tareas().find(x => x.id === el.dataset.id); if (!t) return;
+    dialogo('<h3>Editar tarea</h3><label for="etd">Qué hay que hacer</label><textarea id="etd" rows="3" maxlength="500">' + esc(t.d) + '</textarea>' + botonDictar('etd') + '<label for="etx">Detalle</label><textarea id="etx" rows="3" maxlength="3000">' + esc(t.det || '') + '</textarea><label for="etf">Fecha (vacía: por definir)</label><input id="etf" type="date" value="' + esc(t.v || '') + '"><label for="etp">Prioridad</label><select id="etp">' + ['ALTA', 'MEDIA', 'BAJA'].map(p => '<option' + ((t.p || 'MEDIA') === p ? ' selected' : '') + '>' + p + '</option>').join('') + '</select><p class="gris peq">Cliente: ' + esc(nombreCli(t.cli) || 'sin cliente') + '. Para cambiarlo, búscalo:</p><input id="nq" type="search" autocomplete="off" data-e="buscarNT"><input type="hidden" id="nc" value=""><div id="ns"></div><div id="eterr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="editarTYa" data-id="' + esc(t.id) + '">Guardar</button></div>');
+  },
+  editarTYa(el) {
+    const t = tareas().find(x => x.id === el.dataset.id), orig = ((S.datos && S.datos.tareas) || []).find(x => x.id === el.dataset.id) || {};
+    const d = $('etd').value.trim(); if (!d) { $('eterr').textContent = 'Escribe la tarea.'; return; }
+    const datos = { id: el.dataset.id, descripcion: d, detalle: $('etx').value.trim(), fecha: $('etf').value, prioridad: $('etp').value, base: { d: orig.d, v: orig.v || '' } };
+    if ($('nc').value) datos.cliente = $('nc').value;
+    cerrarDialogo(); encolar('EDITAR_TAREA', datos, 'Tarea corregida');
+  },
+  reabrirT(el) { encolar('REABRIR_TAREA', { id: el.dataset.id }, 'Tarea reabierta'); },
   verTarea(el) {
     const t = tareas().find(x => x.id === el.dataset.id); if (!t) return;
     const u = enlace(t.e), cn = nombreCli(t.cli);
-    dialogo('<h3>' + esc(t.d) + '</h3><p class="gris">' + esc(cn || 'Sin cliente') + ' · ' + fmtDia(t.v) + (t.f ? ' · ' + esc(t.f) : '') + (t.r ? ' · reprogramada ' + t.r + (t.r === 1 ? ' vez' : ' veces') : '') + '</p>' + (t.det ? '<p class="texto">' + esc(t.det) + '</p>' : '') + '<div class="acc"><button class="b p" data-a="cerrarT" data-id="' + esc(t.id) + '">Cerrar tarea</button><button class="b" data-a="reprog" data-id="' + esc(t.id) + '">Reprogramar</button>' + (t.cli ? '<button class="b" data-a="ficha" data-id="' + esc(t.cli) + '">Ver cliente</button>' : '') + (u ? '<a class="b" target="_blank" rel="noopener noreferrer" href="' + esc(u) + '">Abrir origen</a>' : '') + '<button class="b" data-a="cerrarD">Volver</button></div>');
+    dialogo('<h3>' + esc(t.d) + '</h3><p class="gris">' + esc(cn || 'Sin cliente') + ' · ' + fmtDia(t.v) + (t.f ? ' · ' + esc(t.f) : '') + (t.r ? ' · reprogramada ' + t.r + (t.r === 1 ? ' vez' : ' veces') : '') + '</p>' + (t.det ? '<p class="texto">' + esc(t.det) + '</p>' : '') + '<div class="acc"><button class="b p" data-a="cerrarT" data-id="' + esc(t.id) + '">Cerrar tarea</button><button class="b" data-a="editarT" data-id="' + esc(t.id) + '">Editar</button><button class="b" data-a="reprog" data-id="' + esc(t.id) + '">Reprogramar</button>' + (t.cli ? '<button class="b" data-a="ficha" data-id="' + esc(t.cli) + '">Ver cliente</button>' : '') + (u ? '<a class="b" target="_blank" rel="noopener noreferrer" href="' + esc(u) + '">Abrir origen</a>' : '') + '<button class="b" data-a="cerrarD">Volver</button></div>');
   },
   nuevaT(el) {
     const id = el.dataset.id || '';
@@ -619,6 +670,14 @@ const A = {
     const op = (t, txt) => '<a class="card tocable" style="display:block;text-decoration:none;color:inherit" target="_blank" rel="noopener noreferrer" data-reg="WHATSAPP" data-cli="' + esc(c.id) + '" href="' + esc(urlWa(dig, txt)) + '"><b>' + esc(t) + '</b>' + (txt ? '<br><span class="gris peq">' + esc(txt.slice(0, 140)) + (txt.length > 140 ? '…' : '') + '</span>' : '') + '</a>';
     dialogo('<h3>WhatsApp a ' + esc(c.n) + '</h3><p class="gris peq">Se abre WhatsApp con el texto escrito. Revísalo y envíalo tú.</p><div style="max-height:60vh;overflow:auto">' + op('Mensaje en blanco', '') + pl.map(p => op(p.n, rellenar(p.m, c))).join('') + '</div><div class="acc"><button class="b" data-a="cerrarD">Cerrar</button></div>');
   },
+  // ----- Flujo de servicio -----
+  modoEmb(el) { S.modoEmb = el.dataset.m; pintar(); },
+  flujoAv(el) {
+    const f = flujos().find(x => x.id === el.dataset.id); if (!f) return;
+    dialogo('<h3>Marcar como hecha</h3><p><b>' + esc(f.a) + '</b><br><span class="gris">' + esc(nombreCli(f.cli)) + ' · ' + esc(f.s) + '</span></p><label for="fan">Nota (opcional)</label><input id="fan" maxlength="300" placeholder="Por ejemplo: documentos completos">' + botonDictar('fan') + '<div class="acc"><button class="b" data-a="cerrarD">Cancelar</button>' + (f.i > 0 ? '<button class="b" data-a="flujoAcc" data-id="' + esc(f.id) + '" data-x="RETROCEDER">Deshacer el paso anterior</button>' : '') + '<button class="b" data-a="flujoAcc" data-id="' + esc(f.id) + '" data-x="PAUSAR">Pausar</button><button class="b p" data-a="flujoAvYa" data-id="' + esc(f.id) + '" data-b="' + f.i + '">Hecho</button></div>');
+  },
+  flujoAvYa(el) { const nota = $('fan').value.trim(); cerrarDialogo(); encolar('CAMBIAR_FLUJO', { flujo: el.dataset.id, accion: 'AVANZAR', base: el.dataset.b, nota }, 'Etapa marcada como hecha'); },
+  flujoAcc(el) { const f = flujos().find(x => x.id === el.dataset.id); cerrarDialogo(); encolar('CAMBIAR_FLUJO', { flujo: el.dataset.id, accion: el.dataset.x, base: f ? String(f.i) : '' }, { RETROCEDER: 'Se deshizo el paso anterior', PAUSAR: 'Servicio pausado', REANUDAR: 'Servicio reanudado' }[el.dataset.x] || 'Listo'); },
   // ----- Búsqueda, registro rápido y dictado -----
   buscarTodo() { dialogo('<h3>Buscar en todo</h3><input id="btq" type="search" autocomplete="off" placeholder="Nombre, teléfono, tarea, caso o algo que se habló" data-e="buscarT"><div id="btr" style="max-height:60vh;overflow:auto"></div><div class="acc"><button class="b" data-a="cerrarD">Cerrar</button></div>'); $('btq').focus(); },
   rcRes(el) { document.querySelectorAll('#rcR button').forEach(b => b.classList.toggle('activo', b === el)); },
