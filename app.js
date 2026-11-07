@@ -1,7 +1,7 @@
 /* OI CRM sin conexión. Todo lo guardado en el dispositivo va cifrado con una clave derivada del PIN. */
 'use strict';
 const PASARELA = (window.OI_CONFIG || {}).pasarela || '';
-const VERSION_APP = '11';
+const VERSION_APP = '13';
 const ITERACIONES = 310000, MAX_FALLOS = 10, BLOQUEO_MS = 5 * 60000, ESPERA_ENVIO_MS = 7000;
 const S = { clave: null, datos: null, cola: [], sesion: null, avisos: [], ultima: '', vista: 'dia', pila: [], filtro: 'todas', busqueda: '', red: 'ok', sincronizando: false, revocado: false, ocultoDesde: 0 };
 const $ = id => document.getElementById(id);
@@ -847,15 +847,18 @@ const A = {
   agendar(el) {
     const dia = el.dataset.f && el.dataset.f >= hoy() ? el.dataset.f : masDias(1);
     if (!el.dataset.id) { dialogo('<h3>Agendar reunión' + (el.dataset.f ? ' el ' + esc(etiquetaDia(el.dataset.f)) : '') + '</h3><label for="agq">¿Con quién?</label><input id="agq" type="search" autocomplete="off" data-e="buscarAG" data-f="' + esc(dia) + '"><div id="ags"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button></div>'); $('agq').focus(); return; }
-    const c = cliente(el.dataset.id); if (!c) return; const mail = (c.mail || [])[0] || '';
-    dialogo('<h3>Agendar con ' + esc(c.n) + '</h3><label for="agt">Título</label><input id="agt" value="' + esc('Asesoría con ' + c.n) + '" maxlength="150"><label for="agf">Día</label><input id="agf" type="date" min="' + hoy() + '" value="' + esc(dia) + '"><label for="agh">Hora</label><input id="agh" type="time" value="09:00"><label for="agd">Duración</label><select id="agd"><option value="30">30 minutos</option><option value="45">45 minutos</option><option value="60" selected>1 hora</option><option value="90">1 hora y media</option></select><label class="fila"><span>Crear videollamada de Google Meet</span><input id="agm" type="checkbox" checked style="width:auto"></label>' + (mail ? '<label class="fila"><span>Enviar la invitación a ' + esc(mail) + '</span><input id="agi" type="checkbox" style="width:auto"></label>' : '<p class="gris peq">No tiene correo: la reunión queda solo en tu calendario.</p>') + '<label for="agl">O un lugar o enlace propio (opcional)</label><input id="agl" placeholder="Oficina, dirección o enlace de Zoom"><div id="agerr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="agendarYa" data-id="' + esc(c.id) + '">Agendar</button></div>');
+    const c = cliente(el.dataset.id); if (!c) return; const mails = (c.mail || []).filter((m, i, l) => m && l.indexOf(m) === i);
+    const invit = '<p style="margin:12px 0 4px"><b>Enviar la invitación a</b></p>' + (mails.length ? mails.map(m => '<label class="fila"><span>' + esc(m) + '</span><input type="checkbox" class="agc" value="' + esc(m) + '" style="width:auto"></label>').join('') : '<p class="gris peq">No tiene correo guardado.</p>') + '<label for="agx">Otro invitado (opcional)</label><input id="agx" type="email" autocapitalize="off" placeholder="correo@ejemplo.com"><p class="gris peq">Si no marcas ninguno, la reunión queda solo en tu calendario.</p>';
+    dialogo('<h3>Agendar con ' + esc(c.n) + '</h3><label for="agt">Título</label><input id="agt" value="' + esc('Reunión de Estrategia con ' + c.n) + '" maxlength="150"><label for="agf">Día</label><input id="agf" type="date" min="' + hoy() + '" value="' + esc(dia) + '"><label for="agh">Hora</label><input id="agh" type="time" value="09:00"><label for="agd">Duración</label><select id="agd"><option value="30">30 minutos</option><option value="45">45 minutos</option><option value="60" selected>1 hora</option><option value="90">1 hora y media</option></select><label class="fila"><span>Crear videollamada de Google Meet</span><input id="agm" type="checkbox" checked style="width:auto"></label>' + invit + '<label for="agl">O un lugar o enlace propio (opcional)</label><input id="agl" placeholder="Oficina, dirección o enlace de Zoom"><div id="agerr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="agendarYa" data-id="' + esc(c.id) + '">Agendar</button></div>');
   },
   agendarYa(el) {
     const f = $('agf').value, h = $('agh').value; if (!f || !h) { $('agerr').textContent = 'Elige día y hora.'; return; }
     const ini = new Date(f + 'T' + h + ':00'); if (ini.getTime() < Date.now() - 60000) { $('agerr').textContent = 'Esa hora ya pasó.'; return; }
-    const lugar = $('agl').value.trim(), esEnlace = /^https?:\/\//i.test(lugar);
-    const datos = { cliente: el.dataset.id, titulo: $('agt').value.trim(), inicio: ini.toISOString(), minutos: Number($('agd').value), meet: $('agm').checked && !esEnlace, invitar: !!($('agi') && $('agi').checked), enlace: esEnlace ? lugar : '', lugar: esEnlace ? '' : lugar };
-    cerrarDialogo(); encolar('AGENDAR_REUNION', datos, 'Agendada para ' + fmtHora(datos.inicio) + (datos.invitar ? '; se invitará al cliente' : ''));
+    const lugar = $('agl').value.trim(), esEnlace = /^https?:\/\//i.test(lugar), otro = $('agx').value.trim().toLowerCase();
+    if (otro && !/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(otro)) { $('agerr').textContent = 'Revisa el correo del otro invitado.'; return; }
+    const correos = [...document.querySelectorAll('.dialogo .agc')].filter(x => x.checked).map(x => x.value); if (otro && correos.indexOf(otro) < 0) correos.push(otro);
+    const datos = { cliente: el.dataset.id, titulo: $('agt').value.trim(), inicio: ini.toISOString(), minutos: Number($('agd').value), meet: $('agm').checked && !esEnlace, invitar: correos.length > 0, correos, enlace: esEnlace ? lugar : '', lugar: esEnlace ? '' : lugar };
+    cerrarDialogo(); encolar('AGENDAR_REUNION', datos, 'Agendada para ' + fmtHora(datos.inicio) + (correos.length ? '; se invitará a ' + correos.length + (correos.length === 1 ? ' correo' : ' correos') : ''));
   },
   prep(el) {
     const r = reuniones().find(x => x.id === el.dataset.id); if (!r) return; const c = cliente(r.cli); if (!c) return;
