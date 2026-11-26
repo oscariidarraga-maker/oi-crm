@@ -1,7 +1,7 @@
 /* OI CRM sin conexión. Todo lo guardado en el dispositivo va cifrado con una clave derivada del PIN. */
 'use strict';
 const PASARELA = (window.OI_CONFIG || {}).pasarela || '';
-const VERSION_APP = '15';
+const VERSION_APP = '16';
 const ITERACIONES = 310000, MAX_FALLOS = 10, BLOQUEO_MS = 5 * 60000, ESPERA_ENVIO_MS = 7000;
 const S = { clave: null, datos: null, cola: [], sesion: null, avisos: [], ultima: '', vista: 'dia', pila: [], filtro: 'todas', busqueda: '', red: 'ok', sincronizando: false, revocado: false, ocultoDesde: 0 };
 const $ = id => document.getElementById(id);
@@ -222,11 +222,11 @@ const nombreCli = id => { const c = cliente(id); return c ? c.n : ''; };
 function ordenVence(a, b) { return (a.v || '9999').localeCompare(b.v || '9999'); }
 
 /* ---------- Pintado ---------- */
-const VISTAS = { dia: ['Mi día', vDia], agenda: ['Agenda', vAgenda], tareas: ['Tareas', vTareas], clientes: ['Clientes', vClientes], embudo: ['Embudo', vEmbudo], cobros: ['Cobros', vCobros], sinc: ['Sincronizar', vSinc] };
-const NAV_CORTO = { dia: 'Hoy', agenda: 'Agenda', tareas: 'Tareas', clientes: 'Clientes', embudo: 'Embudo', cobros: 'Cobros', sinc: 'Sinc.' };
+const VISTAS = { dia: ['Mi día', vDia], agenda: ['Agenda', vAgenda], tareas: ['Tareas', vTareas], clientes: ['Clientes', vClientes], embudo: ['Embudo', vEmbudo], serv: ['Servicios', vServicios], cobros: ['Cobros', vCobros], sinc: ['Sincronizar', vSinc] };
+const NAV_CORTO = { dia: 'Hoy', agenda: 'Agenda', tareas: 'Tareas', clientes: 'Clientes', embudo: 'Embudo', serv: 'Servicios', cobros: 'Cobros', sinc: 'Sinc.' };
 function pintar() {
   const r = $('raiz'), ficha = S.vista === 'ficha', titulo = ficha ? (nombreCli(S.pila[S.pila.length - 1]) || 'Cliente') : VISTAS[S.vista][0];
-  r.innerHTML = '<header class="cab">' + (ficha ? '<button class="volver" data-a="volver" aria-label="Volver">‹ Volver</button>' : '') + '<b>' + esc(titulo) + '</b><span><button class="estado" data-a="buscarTodo" aria-label="Buscar en todo">Buscar</button> <button class="estado" data-a="ir" data-v="sinc" id="est"></button></span></header><main id="m"></main><nav class="nav" aria-label="Secciones">' + ['dia', 'agenda', 'tareas', 'clientes', 'embudo', 'cobros', 'sinc'].map(v => '<button style="font-size:11.5px;padding:14px 0" data-a="ir" data-v="' + v + '" class="' + (S.vista === v ? 'activo' : '') + '"' + (S.vista === v ? ' aria-current="page"' : '') + ' aria-label="' + VISTAS[v][0] + '">' + NAV_CORTO[v] + '</button>').join('') + '</nav>';
+  r.innerHTML = '<header class="cab">' + (ficha ? '<button class="volver" data-a="volver" aria-label="Volver">‹ Volver</button>' : '') + '<b>' + esc(titulo) + '</b><span><button class="estado" data-a="buscarTodo" aria-label="Buscar en todo">Buscar</button> <button class="estado" data-a="ir" data-v="sinc" id="est"></button></span></header><main id="m"></main><nav class="nav" aria-label="Secciones">' + ['dia', 'agenda', 'tareas', 'clientes', 'embudo', 'serv', 'cobros'].map(v => '<button style="font-size:11.5px;padding:14px 0" data-a="ir" data-v="' + v + '" class="' + (S.vista === v ? 'activo' : '') + '"' + (S.vista === v ? ' aria-current="page"' : '') + ' aria-label="' + VISTAS[v][0] + '">' + NAV_CORTO[v] + '</button>').join('') + '</nav>';
   $('m').innerHTML = ficha ? vFicha(S.pila[S.pila.length - 1]) : VISTAS[S.vista][1]();
   pintarEstado();
 }
@@ -584,15 +584,21 @@ function siguienteEtapa(e) { const l = etapasAbiertas(), i = l.indexOf(e); retur
 function vEmbudo() {
   if (!S.datos) return '<div class="vacio">Aún no hay datos. Sincroniza con internet para descargarlos.</div>';
   const modo = '<div class="chips"><button data-a="modoEmb" data-m="ventas" class="' + (S.modoEmb !== 'serv' ? 'activo' : '') + '">Ventas</button><button data-a="modoEmb" data-m="serv" class="' + (S.modoEmb === 'serv' ? 'activo' : '') + '">Servicios en curso</button></div>';
-  if (S.modoEmb === 'serv') {
+  if (S.modoEmb === 'serv') return modo + vServiciosLista();
+  return modo + vEmbudoVentas();
+}
+/** Pestaña Servicios de la barra inferior: tu orden, pausados aparte y terminados al final. */
+function vServicios() {
+  if (!S.datos) return '<div class="vacio">Aún no hay datos. Sincroniza con internet para descargarlos.</div>';
+  return vServiciosLista();
+}
+function vServiciosLista() {
     const fl = flujos(), act = fl.filter(f => f.e === 'EN_CURSO'), atr = act.filter(f => f.at);
     const pau = ordenFlujos(fl.filter(f => f.e === 'PAUSADO')), ter = fl.filter(f => f.e === 'TERMINADO');
-    return modo + '<div class="met"><button><strong>' + act.length + '</strong><span>En curso</span></button><button class="' + (atr.length ? 'malo' : '') + '"><strong>' + atr.length + '</strong><span>Atrasados</span></button><button><strong>' + pau.length + '</strong><span>Pausados</span></button></div>' +
+    return '<div class="met"><button><strong>' + act.length + '</strong><span>En curso</span></button><button class="' + (atr.length ? 'malo' : '') + '"><strong>' + atr.length + '</strong><span>Atrasados</span></button><button><strong>' + pau.length + '</strong><span>Pausados</span></button></div>' +
       (act.length ? ordenFlujos(act).map(f => tarjetaFlujo(f, 1, 1)).join('') : '<div class="vacio">No hay servicios en curso. Se crean al registrar un contrato.</div>') +
       (pau.length ? '<h2>Pausados</h2><p class="gris peq">Al reanudar, cada uno vuelve a su lugar.</p>' + pau.map(f => tarjetaFlujo(f, 1)).join('') : '') +
       (ter.length ? '<details style="margin-top:12px"><summary><b>Terminados en los últimos 30 días (' + ter.length + ')</b></summary>' + ter.map(f => tarjetaFlujo(f, 1)).join('') + '</details>' : '');
-  }
-  return modo + vEmbudoVentas();
 }
 function vEmbudoVentas() {
   const ops = oportunidades(), et = etapasAbiertas(), abiertas = ops.filter(o => CERRADAS.indexOf(o.e) < 0);
