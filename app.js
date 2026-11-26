@@ -1,7 +1,7 @@
 /* OI CRM sin conexión. Todo lo guardado en el dispositivo va cifrado con una clave derivada del PIN. */
 'use strict';
 const PASARELA = (window.OI_CONFIG || {}).pasarela || '';
-const VERSION_APP = '18';
+const VERSION_APP = '19';
 const ITERACIONES = 310000, MAX_FALLOS = 10, BLOQUEO_MS = 5 * 60000, ESPERA_ENVIO_MS = 7000;
 const S = { clave: null, datos: null, cola: [], sesion: null, avisos: [], ultima: '', vista: 'dia', pila: [], filtro: 'todas', busqueda: '', red: 'ok', sincronizando: false, revocado: false, ocultoDesde: 0 };
 const $ = id => document.getElementById(id);
@@ -630,13 +630,22 @@ function vEmbudoVentas() {
 }
 
 /* ---------- Fotos de documentos y tarjetas ---------- */
-function comprimir(f) {
-  return new Promise((ok, mal) => {
-    const u = URL.createObjectURL(f), im = new Image();
-    im.onload = () => { const k = Math.min(1, 2000 / Math.max(im.width, im.height)), cv = document.createElement('canvas'); cv.width = Math.round(im.width * k); cv.height = Math.round(im.height * k); cv.getContext('2d').drawImage(im, 0, 0, cv.width, cv.height); URL.revokeObjectURL(u); ok({ mime: 'image/jpeg', b64: cv.toDataURL('image/jpeg', 0.82).split(',')[1] }); };
-    im.onerror = () => { URL.revokeObjectURL(u); mal(new Error('No se pudo leer la imagen')); };
-    im.src = u;
-  });
+/** Reduce la foto a 2000 px en JPG. Prueba tres caminos: el iPhone a veces no decodifica una imagen por uno de ellos. */
+function dibujarJpg(fuente, w, h) {
+  const k = Math.min(1, 2000 / Math.max(w, h)), cv = document.createElement('canvas'); cv.width = Math.max(1, Math.round(w * k)); cv.height = Math.max(1, Math.round(h * k));
+  cv.getContext('2d').drawImage(fuente, 0, 0, cv.width, cv.height);
+  const b64 = cv.toDataURL('image/jpeg', 0.82).split(',')[1]; if (!b64 || b64.length < 100) throw new Error('vacía');
+  return { mime: 'image/jpeg', b64 };
+}
+const cargarImg = src => new Promise((ok, mal) => { const im = new Image(); im.onload = () => ok(im); im.onerror = () => mal(new Error('img')); im.src = src; });
+async function comprimir(f) {
+  try { if (window.createImageBitmap) { const bm = await createImageBitmap(f); const r = dibujarJpg(bm, bm.width, bm.height); if (bm.close) bm.close(); return r; } } catch (e) { }
+  const u = URL.createObjectURL(f);
+  try { const im = await cargarImg(u); return dibujarJpg(im, im.width, im.height); } catch (e) { } finally { URL.revokeObjectURL(u); }
+  try { const im = await cargarImg('data:' + (f.type || 'image/jpeg') + ';base64,' + await aBase64(f)); return dibujarJpg(im, im.width, im.height); } catch (e) { }
+  // Si no se pudo reducir, va la original cuando el CRM la acepta tal cual.
+  if (/^image\/(jpeg|png)$/.test(f.type) && f.size <= 4.5e6) return { mime: f.type, b64: await aBase64(f) };
+  throw new Error(/heic|heif/i.test(f.type + f.name) ? 'la foto está en formato HEIC: tómala de nuevo con la cámara desde aquí o guárdala como JPG' : f.size > 4.5e6 ? 'la imagen es muy pesada y el teléfono no la pudo reducir; tómala con la cámara desde aquí' : 'el teléfono no pudo leer esta imagen; prueba con otra o envíala como PDF');
 }
 const aBase64 = f => new Promise((ok, mal) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.onerror = () => mal(r.error); r.readAsDataURL(f); });
 /** Sube de inmediato: las fotos no se guardan en el celular. Requiere internet. */
