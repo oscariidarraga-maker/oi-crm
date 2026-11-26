@@ -1,7 +1,7 @@
 /* OI CRM sin conexión. Todo lo guardado en el dispositivo va cifrado con una clave derivada del PIN. */
 'use strict';
 const PASARELA = (window.OI_CONFIG || {}).pasarela || '';
-const VERSION_APP = '17';
+const VERSION_APP = '18';
 const ITERACIONES = 310000, MAX_FALLOS = 10, BLOQUEO_MS = 5 * 60000, ESPERA_ENVIO_MS = 7000;
 const S = { clave: null, datos: null, cola: [], sesion: null, avisos: [], ultima: '', vista: 'dia', pila: [], filtro: 'todas', busqueda: '', red: 'ok', sincronizando: false, revocado: false, ocultoDesde: 0 };
 const $ = id => document.getElementById(id);
@@ -858,7 +858,7 @@ const A = {
   subcarpetaYa(el) { const n = $('scn').value.trim(); if (!n) { $('scerr').textContent = 'Escribe el nombre.'; return; } cerrarDialogo(); encolar('CREAR_SUBCARPETA', { cliente: el.dataset.id, nombre: n }, 'Se creará la subcarpeta al sincronizar'); },
   expediente(el) {
     const c = cliente(el.dataset.id); if (!c) return; const a = (S.datos.ajustes || {}).anio || hoy().slice(0, 4);
-    dialogo('<h3>Crear expediente de ' + esc(c.n) + '</h3><p class="peq">Se crea su carpeta en OneDrive con el siguiente consecutivo del año (OI - P - 000045 - NOMBRE), se registra en el registro maestro y queda vinculada a su ficha.</p><label for="exa">Año del expediente</label><input id="exa" type="number" min="2020" max="2099" value="' + esc(a) + '"><label class="fila"><span>Verifiqué el pago en mi banco</span><input id="exp" type="checkbox" style="width:auto"></label><div id="exerr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="expedienteYa" data-id="' + esc(c.id) + '">Crear expediente</button></div>');
+    dialogo('<h3>Crear expediente de ' + esc(c.n) + '</h3><p class="peq">Se crea su carpeta en OneDrive con el siguiente número libre del año (formato OI - P - AÑO - 0000## - NOMBRE; el CRM elige el número para no repetir ninguno), se registra en el registro maestro y queda vinculada a su ficha.</p><label for="exa">Año del expediente</label><input id="exa" type="number" min="2020" max="2099" value="' + esc(a) + '"><label class="fila"><span>Verifiqué el pago en mi banco</span><input id="exp" type="checkbox" style="width:auto"></label><div id="exerr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="expedienteYa" data-id="' + esc(c.id) + '">Crear expediente</button></div>');
   },
   expedienteYa(el) {
     if (!$('exp').checked) { $('exerr').textContent = 'Confirma que verificaste el pago en tu banco.'; return; }
