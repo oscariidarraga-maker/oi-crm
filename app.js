@@ -1,7 +1,7 @@
 /* OI CRM sin conexión. Todo lo guardado en el dispositivo va cifrado con una clave derivada del PIN. */
 'use strict';
 const PASARELA = (window.OI_CONFIG || {}).pasarela || '';
-const VERSION_APP = '14';
+const VERSION_APP = '15';
 const ITERACIONES = 310000, MAX_FALLOS = 10, BLOQUEO_MS = 5 * 60000, ESPERA_ENVIO_MS = 7000;
 const S = { clave: null, datos: null, cola: [], sesion: null, avisos: [], ultima: '', vista: 'dia', pila: [], filtro: 'todas', busqueda: '', red: 'ok', sincronizando: false, revocado: false, ocultoDesde: 0 };
 const $ = id => document.getElementById(id);
@@ -125,6 +125,9 @@ function describir(c) {
   if (c.accion === 'MARCAR_REUNION') return (c.datos.estado === 'CELEBRADA_CONFIRMADA' ? 'Realizada: ' : 'No se presentó: ') + reu(c.datos.reunion);
   if (c.accion === 'REPROGRAMAR_REUNION') return 'Reprogramar ' + reu(c.datos.reunion) + ' al ' + fmtHora(c.datos.inicio);
   if (c.accion === 'AGENDAR_REUNION') return 'Agendar con ' + nc(c.datos.cliente) + ' el ' + fmtHora(c.datos.inicio);
+  if (c.accion === 'CREAR_EXPEDIENTE') return 'Crear expediente de ' + nc(c.datos.cliente) + ' (' + c.datos.anio + ')';
+  if (c.accion === 'CAMBIAR_CLIENTE_FLUJO') return 'Pasar un servicio a ' + nc(c.datos.cliente);
+  if (c.accion === 'MOVER_FLUJOS') return 'Nuevo orden de los servicios';
   if (c.accion === 'MOVER_ETAPA') return 'Mover a ' + c.datos.etapa + ': ' + (c.datos.nombre || 'oportunidad');
   if (c.accion === 'CREAR_OPORTUNIDAD') return 'Nueva oportunidad: ' + c.datos.nombre;
   if (c.accion === 'UNIFICAR') return 'Unificar ' + nc(c.datos.absorbido) + ' en ' + nc(c.datos.principal);
@@ -355,7 +358,7 @@ function vFicha(id) {
   const notas = S.cola.filter(n => n.accion === 'AGREGAR_NOTA' && n.datos.cliente === id).map(n => ({ f: n.fecha.slice(0, 10), c: 'APP', a: 'Nota', r: n.datos.texto, pend: 1 })), his = notas.concat(c.his || []);
   const dc = diasCumple(c.cu), car = enlace(c.car);
   let x = '<h1>' + esc(c.n) + '</h1><span class="etq">' + esc(String(c.s || '').replace(/_/g, ' ')) + '</span>' + (c.ci ? '<span class="etq">' + esc(c.ci) + '</span>' : '') + etqInteres(c.pi) + (dc === 0 ? '<span class="etq oro">Cumple hoy</span>' : '') + String(c.et || '').split('|').map(t => t.trim()).filter(Boolean).map(t => '<span class="etq"># ' + esc(t) + '</span>').join('');
-  x += '<div class="acc">' + botonesContacto(c, dc === 0 ? 'CUMPLE_HOY' : dc !== null && dc <= 7 ? 'CUMPLE_SEMANA' : '') + (car ? '<a class="b" target="_blank" rel="noopener noreferrer" href="' + esc(car) + '">Carpeta</a>' : '') + '</div>';
+  x += '<div class="acc">' + botonesContacto(c, dc === 0 ? 'CUMPLE_HOY' : dc !== null && dc <= 7 ? 'CUMPLE_SEMANA' : '') + (car ? '<a class="b" target="_blank" rel="noopener noreferrer" href="' + esc(car) + '">Carpeta</a>' : (S.datos.ajustes || {}).od && !c.nuevo && !S.cola.some(q => q.accion === 'CREAR_EXPEDIENTE' && q.datos.cliente === id) ? '<button class="b" data-a="expediente" data-id="' + esc(id) + '">Crear expediente</button>' : '') + '</div>';
   x += '<div class="acc"><button class="b p" data-a="agendar" data-id="' + esc(id) + '">Agendar reunión</button><button class="b" data-a="nuevaT" data-id="' + esc(id) + '">Nueva tarea</button><button class="b" data-a="nota" data-id="' + esc(id) + '">Agregar nota</button><button class="b" data-a="onb" data-id="' + esc(id) + '">Enviar onboarding</button></div>';
   x += '<div class="acc"><button class="b" data-a="editar" data-id="' + esc(id) + '">Editar contacto</button>' + (c.nuevo ? '' : '<button class="b" data-a="foto" data-id="' + esc(id) + '">Foto de documento</button><button class="b" data-a="unificar" data-id="' + esc(id) + '">Unificar con otro</button>') + '</div>' + (c.nuevo ? '<p class="gris peq">Recién creado: se guarda en el CRM al sincronizar. Ya puedes agendarle, crearle tareas o contratos; las fotos y la unificación se habilitan cuando el CRM lo confirme.</p>' : c.pend ? '<p class="gris peq">Tiene cambios por confirmar en el CRM.</p>' : '');
   const cumpleTxt = c.cu ? new Date('2000-' + c.cu + 'T12:00:00').toLocaleDateString('es-CO', { day: 'numeric', month: 'long' }) + (dc === 0 ? ' (hoy)' : dc !== null ? ' (en ' + dc + (dc === 1 ? ' día)' : ' días)') : '') : '';
@@ -397,15 +400,20 @@ function vSinc() {
 function flujos() {
   const l = ((S.datos && S.datos.flujos) || []).map(f => Object.assign({}, f, { et: (f.et || []).map(x => Object.assign({}, x)) }));
   S.cola.forEach(q => {
+    if (q.accion === 'MOVER_FLUJOS') { (q.datos.ids || []).forEach((id, k) => { const f = l.find(x => x.id === id); if (f) f.o = (k + 1) * 10; }); return; }
+    if (q.accion === 'CAMBIAR_CLIENTE_FLUJO') { const f = l.find(x => x.id === q.datos.flujo); if (f) { f.cli = q.datos.cliente; f.pend = 1; } return; }
     if (q.accion !== 'CAMBIAR_FLUJO') return; const f = l.find(x => x.id === q.datos.flujo); if (!f) return;
     f.pend = 1;
+    if (q.datos.accion === 'CIERRE' && f.ic > f.i) { for (let k = f.i; k < f.ic; k++) f.et[k].f = q.fecha.slice(0, 10); f.i = f.ic; f.a = f.nc || (f.et[f.i] || {}).n || ''; f.d = 0; f.at = 0; f.e = 'EN_CURSO'; f.onb = 0; return; }
     if (q.datos.accion === 'AVANZAR' && f.et[f.i]) { f.et[f.i].f = q.fecha.slice(0, 10); f.i++; f.d = 0; f.at = 0; const s = f.et[f.i]; f.a = s ? s.n : 'Terminado'; if (!s) f.e = 'TERMINADO'; f.onb = 0; }
     else if (q.datos.accion === 'RETROCEDER' && f.i > 0) { f.i--; f.et[f.i].f = ''; f.a = f.et[f.i].n; f.e = 'EN_CURSO'; }
     else if (q.datos.accion === 'PAUSAR') f.e = 'PAUSADO'; else if (q.datos.accion === 'REANUDAR') f.e = 'EN_CURSO';
   });
   return l;
 }
-function tarjetaFlujo(f, conNombre) {
+/** Tu orden de la pantalla Servicios del CRM: primero los numerados, luego por fecha de inicio. */
+function ordenFlujos(l) { return l.slice().sort((a, b) => ((a.o || 1e12) - (b.o || 1e12)) || String(a.ini || '').localeCompare(String(b.ini || ''))); }
+function tarjetaFlujo(f, conNombre, mover) {
   const lista = f.et.map((x, k) => '<div class="fila"><span' + (k === f.i && f.e !== 'TERMINADO' ? ' style="font-weight:700"' : '') + '>' + (x.f ? '✓ ' : k === f.i ? '▶ ' : '· ') + esc(x.n) + '</span><span class="gris peq">' + (x.f ? fmtDia(x.f) : '') + '</span></div>').join('');
   const plTipo = s => ((S.datos.plantillas || []).filter(p => p.s === s)[0]);
   const c = cliente(f.cli), dig = digitosWa(c), msg = (s, t) => { const p = plTipo(s); return p && dig.length >= 8 ? '<a class="b" target="_blank" rel="noopener noreferrer" data-reg="WHATSAPP" data-cli="' + esc(f.cli) + '" href="' + esc(urlWa(dig, rellenar(p.m, c, s === 'ONBOARDING' ? f.ol : ''))) + '">' + t + '</a>' : ''; };
@@ -414,6 +422,10 @@ function tarjetaFlujo(f, conNombre) {
   if (f.onb) acc += '<button class="b" data-a="onb" data-id="' + esc(f.cli) + '">Enviar formulario</button>';
   if (f.res) acc += msg('RESENA', 'Pedir reseña');
   if (f.e === 'PAUSADO') acc += '<button class="b" data-a="flujoAcc" data-id="' + esc(f.id) + '" data-x="REANUDAR">Reanudar</button>';
+  if (f.e === 'EN_CURSO' && f.ic > f.i) acc += '<button class="b" data-a="flujoCierre" data-id="' + esc(f.id) + '">Pasar a ' + esc(f.nc || 'cierre') + '</button>';
+  if (f.e === 'EN_CURSO') acc += '<button class="b" data-a="flujoAcc" data-id="' + esc(f.id) + '" data-x="PAUSAR">Pausar</button>';
+  acc += '<button class="b" data-a="flujoCli" data-id="' + esc(f.id) + '">Cambiar cliente</button>';
+  if (mover) acc += '<button class="b" data-a="flujoMov" data-id="' + esc(f.id) + '" data-x="-1" aria-label="Subir">↑</button><button class="b" data-a="flujoMov" data-id="' + esc(f.id) + '" data-x="1" aria-label="Bajar">↓</button>';
   return '<div class="card"><h3>' + esc(conNombre ? (nombreCli(f.cli) + ' · ' + f.s) : f.s) + '</h3><span class="etq' + (f.at ? ' mal' : f.e === 'TERMINADO' ? '' : ' oro') + '">' + (f.e === 'TERMINADO' ? 'Terminado' : f.e === 'PAUSADO' ? 'Pausado' : (f.at ? 'Atrasado · ' : '') + esc(f.a)) + '</span>' + (f.e === 'EN_CURSO' && !f.pend ? '<span class="gris peq"> ' + f.d + ' de ' + f.p + ' días</span>' : '') + (f.pend ? '<span class="etq oro">Por confirmar</span>' : '') + '<details style="margin-top:6px"><summary class="gris peq">Ver las ' + f.t + ' etapas</summary>' + lista + '</details><div class="acc">' + acc + '</div></div>';
 }
 
@@ -574,7 +586,11 @@ function vEmbudo() {
   const modo = '<div class="chips"><button data-a="modoEmb" data-m="ventas" class="' + (S.modoEmb !== 'serv' ? 'activo' : '') + '">Ventas</button><button data-a="modoEmb" data-m="serv" class="' + (S.modoEmb === 'serv' ? 'activo' : '') + '">Servicios en curso</button></div>';
   if (S.modoEmb === 'serv') {
     const fl = flujos(), act = fl.filter(f => f.e === 'EN_CURSO'), atr = act.filter(f => f.at);
-    return modo + '<div class="met"><button><strong>' + act.length + '</strong><span>En curso</span></button><button class="' + (atr.length ? 'malo' : '') + '"><strong>' + atr.length + '</strong><span>Atrasados</span></button><button><strong>' + fl.filter(f => f.e === 'TERMINADO').length + '</strong><span>Terminados</span></button></div>' + (fl.length ? fl.slice().sort((a, b) => (b.at - a.at) || (a.i - b.i)).map(f => tarjetaFlujo(f, 1)).join('') : '<div class="vacio">No hay servicios en curso. Se crean al registrar un contrato.</div>');
+    const pau = ordenFlujos(fl.filter(f => f.e === 'PAUSADO')), ter = fl.filter(f => f.e === 'TERMINADO');
+    return modo + '<div class="met"><button><strong>' + act.length + '</strong><span>En curso</span></button><button class="' + (atr.length ? 'malo' : '') + '"><strong>' + atr.length + '</strong><span>Atrasados</span></button><button><strong>' + pau.length + '</strong><span>Pausados</span></button></div>' +
+      (act.length ? ordenFlujos(act).map(f => tarjetaFlujo(f, 1, 1)).join('') : '<div class="vacio">No hay servicios en curso. Se crean al registrar un contrato.</div>') +
+      (pau.length ? '<h2>Pausados</h2><p class="gris peq">Al reanudar, cada uno vuelve a su lugar.</p>' + pau.map(f => tarjetaFlujo(f, 1)).join('') : '') +
+      (ter.length ? '<details style="margin-top:12px"><summary><b>Terminados en los últimos 30 días (' + ter.length + ')</b></summary>' + ter.map(f => tarjetaFlujo(f, 1)).join('') + '</details>' : '');
   }
   return modo + vEmbudoVentas();
 }
@@ -770,6 +786,39 @@ const A = {
   flujoAv(el) {
     const f = flujos().find(x => x.id === el.dataset.id); if (!f) return;
     dialogo('<h3>Marcar como hecha</h3><p><b>' + esc(f.a) + '</b><br><span class="gris">' + esc(nombreCli(f.cli)) + ' · ' + esc(f.s) + '</span></p><label for="fan">Nota (opcional)</label><input id="fan" maxlength="300" placeholder="Por ejemplo: documentos completos">' + botonDictar('fan') + '<div class="acc"><button class="b" data-a="cerrarD">Cancelar</button>' + (f.i > 0 ? '<button class="b" data-a="flujoAcc" data-id="' + esc(f.id) + '" data-x="RETROCEDER">Deshacer el paso anterior</button>' : '') + '<button class="b" data-a="flujoAcc" data-id="' + esc(f.id) + '" data-x="PAUSAR">Pausar</button><button class="b p" data-a="flujoAvYa" data-id="' + esc(f.id) + '" data-b="' + f.i + '">Hecho</button></div>');
+  },
+  flujoCierre(el) {
+    const f = flujos().find(x => x.id === el.dataset.id); if (!f) return;
+    dialogo('<h3>Pasar a ' + esc(f.nc || 'cierre') + '</h3><p class="gris">' + esc(nombreCli(f.cli)) + ' · ' + esc(f.s) + '</p><p>Las ' + (f.ic - f.i) + ' etapas que faltan antes del cierre quedan marcadas como realizadas hoy y sus tareas se cierran.</p><label for="fcn">Nota (opcional)</label><input id="fcn" maxlength="300" placeholder="Por ejemplo: se hizo antes de usar el CRM"><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="flujoCierreYa" data-id="' + esc(f.id) + '" data-b="' + f.i + '">Pasar a cierre</button></div>');
+  },
+  flujoCierreYa(el) { const nota = $('fcn').value.trim(); cerrarDialogo(); encolar('CAMBIAR_FLUJO', { flujo: el.dataset.id, accion: 'CIERRE', base: el.dataset.b, nota }, 'Pasó a cierre y seguimiento'); },
+  flujoCli(el) {
+    const f = flujos().find(x => x.id === el.dataset.id); if (!f) return;
+    dialogo('<h3>Cambiar el cliente del servicio</h3><p class="gris">' + esc(f.s) + ', hoy en ' + esc(nombreCli(f.cli)) + '.</p><p class="peq">Pasa al cliente correcto con su contrato, cuotas, pagos, tareas e historial. Nada se borra.</p><label for="fcq">Cliente correcto</label><input id="fcq" type="search" autocomplete="off" data-e="buscarFC" data-id="' + esc(f.id) + '"><div id="fcs"></div><input type="hidden" id="fcc"><p id="fcsel" class="gris"></p><label for="fcm">¿Por qué se cambia?</label><input id="fcm" maxlength="300" placeholder="Por ejemplo: el contrato es de su esposa"><div id="fcerr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="flujoCliYa" data-id="' + esc(f.id) + '">Cambiar cliente</button></div>');
+    $('fcq').focus();
+  },
+  elegirFC(el) { $('fcc').value = el.dataset.c; $('fcsel').textContent = 'Elegido: ' + el.textContent; $('fcs').innerHTML = ''; $('fcq').value = ''; },
+  flujoCliYa(el) {
+    const c = $('fcc').value, m = $('fcm').value.trim(); if (!c) { $('fcerr').textContent = 'Busca y elige el cliente correcto.'; return; } if (!m) { $('fcerr').textContent = 'Escribe por qué se cambia.'; return; }
+    const f = flujos().find(x => x.id === el.dataset.id); if (f && f.cli === c) { $('fcerr').textContent = 'El servicio ya está en ese cliente.'; return; }
+    cerrarDialogo(); encolar('CAMBIAR_CLIENTE_FLUJO', { flujo: el.dataset.id, cliente: c, motivo: m }, 'Servicio pasado a ' + nombreCli(c));
+  },
+  flujoMov(el) {
+    // Se mueve entre los en curso; los pausados conservan su lugar para volver a él al reanudarse.
+    const todos = ordenFlujos(flujos().filter(f => f.e === 'EN_CURSO' || f.e === 'PAUSADO')), act = todos.filter(f => f.e === 'EN_CURSO').map(f => f.id);
+    const i = act.indexOf(el.dataset.id), j = i + Number(el.dataset.x); if (i < 0 || j < 0 || j >= act.length) return;
+    act.splice(i, 1); act.splice(j, 0, el.dataset.id);
+    let k = 0; const ids = todos.map(f => f.e === 'EN_CURSO' ? act[k++] : f.id);
+    encolar('MOVER_FLUJOS', { ids }, 'Orden guardado', false);
+  },
+  expediente(el) {
+    const c = cliente(el.dataset.id); if (!c) return; const a = (S.datos.ajustes || {}).anio || hoy().slice(0, 4);
+    dialogo('<h3>Crear expediente de ' + esc(c.n) + '</h3><p class="peq">Se crea su carpeta en OneDrive con el siguiente consecutivo del año (OI - P - 000045 - NOMBRE), se registra en el registro maestro y queda vinculada a su ficha.</p><label for="exa">Año del expediente</label><input id="exa" type="number" min="2020" max="2099" value="' + esc(a) + '"><label class="fila"><span>Verifiqué el pago en mi banco</span><input id="exp" type="checkbox" style="width:auto"></label><div id="exerr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="expedienteYa" data-id="' + esc(c.id) + '">Crear expediente</button></div>');
+  },
+  expedienteYa(el) {
+    if (!$('exp').checked) { $('exerr').textContent = 'Confirma que verificaste el pago en tu banco.'; return; }
+    const a = $('exa').value; if (!/^20\d{2}$/.test(a)) { $('exerr').textContent = 'Revisa el año.'; return; }
+    cerrarDialogo(); encolar('CREAR_EXPEDIENTE', { cliente: el.dataset.id, anio: a, pago: true }, 'Se creará el expediente al sincronizar');
   },
   flujoAvYa(el) { const nota = $('fan').value.trim(); cerrarDialogo(); encolar('CAMBIAR_FLUJO', { flujo: el.dataset.id, accion: 'AVANZAR', base: el.dataset.b, nota }, 'Etapa marcada como hecha'); },
   flujoAcc(el) { const f = flujos().find(x => x.id === el.dataset.id); cerrarDialogo(); encolar('CAMBIAR_FLUJO', { flujo: el.dataset.id, accion: el.dataset.x, base: f ? String(f.i) : '' }, { RETROCEDER: 'Se deshizo el paso anterior', PAUSAR: 'Servicio pausado', REANUDAR: 'Servicio reanudado' }[el.dataset.x] || 'Listo'); },
@@ -1040,6 +1089,7 @@ document.addEventListener('input', e => {
   if (k === 'buscar') { S.busqueda = e.target.value; $('lc').innerHTML = listaCli(); }
   if (k === 'buscarT') { $('btr').innerHTML = buscarTodo(e.target.value); }
   if (k === 'buscarU') { const q = e.target.value, yo = e.target.dataset.id; $('us').innerHTML = q.length < 2 ? '' : buscarCli(q, 8).lista.filter(c => c.id !== yo).map(c => '<button class="card tocable" data-a="confirmarU" data-ca="' + esc(yo) + '" data-cb="' + esc(c.id) + '"><b>' + esc(c.n) + '</b><br><span class="gris peq">' + esc((c.tel && c.tel[0]) || (c.mail && c.mail[0]) || '') + '</span></button>').join('') || '<p class="gris">Sin coincidencias</p>'; }
+  if (k === 'buscarFC') { const q = e.target.value; $('fcs').innerHTML = q.length < 2 ? '' : buscarCli(q, 8).lista.map(c => '<button class="b" style="margin:2px" data-a="elegirFC" data-c="' + esc(c.id) + '">' + esc(c.n) + '</button>').join('') || '<p class="gris">Sin coincidencias</p>'; }
   if (k === 'buscarAG') { const q = e.target.value, f = e.target.dataset.f; $('ags').innerHTML = q.length < 2 ? '' : buscarCli(q, 8).lista.map(c => '<button class="b" style="margin:2px" data-a="agendar" data-id="' + esc(c.id) + '" data-f="' + esc(f) + '">' + esc(c.n) + '</button>').join('') || '<p class="gris">Sin coincidencias</p>'; }
   if (k === 'buscarNO') { const q = e.target.value; $('oc').value = ''; $('os').innerHTML = q.length < 2 ? '' : buscarCli(q, 6).lista.map(c => '<button class="b" data-a="elegirO" data-id="' + esc(c.id) + '">' + esc(c.n) + '</button> ').join(''); }
   if (k === 'nuevoDup') avisoRepetido();
