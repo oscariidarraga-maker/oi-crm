@@ -1,7 +1,7 @@
 /* OI CRM sin conexión. Todo lo guardado en el dispositivo va cifrado con una clave derivada del PIN. */
 'use strict';
 const PASARELA = (window.OI_CONFIG || {}).pasarela || '';
-const VERSION_APP = '16';
+const VERSION_APP = '17';
 const ITERACIONES = 310000, MAX_FALLOS = 10, BLOQUEO_MS = 5 * 60000, ESPERA_ENVIO_MS = 7000;
 const S = { clave: null, datos: null, cola: [], sesion: null, avisos: [], ultima: '', vista: 'dia', pila: [], filtro: 'todas', busqueda: '', red: 'ok', sincronizando: false, revocado: false, ocultoDesde: 0 };
 const $ = id => document.getElementById(id);
@@ -125,6 +125,7 @@ function describir(c) {
   if (c.accion === 'MARCAR_REUNION') return (c.datos.estado === 'CELEBRADA_CONFIRMADA' ? 'Realizada: ' : 'No se presentó: ') + reu(c.datos.reunion);
   if (c.accion === 'REPROGRAMAR_REUNION') return 'Reprogramar ' + reu(c.datos.reunion) + ' al ' + fmtHora(c.datos.inicio);
   if (c.accion === 'AGENDAR_REUNION') return 'Agendar con ' + nc(c.datos.cliente) + ' el ' + fmtHora(c.datos.inicio);
+  if (c.accion === 'CREAR_SUBCARPETA') return 'Crear la subcarpeta ' + c.datos.nombre + ' de ' + nc(c.datos.cliente);
   if (c.accion === 'CREAR_EXPEDIENTE') return 'Crear expediente de ' + nc(c.datos.cliente) + ' (' + c.datos.anio + ')';
   if (c.accion === 'CAMBIAR_CLIENTE_FLUJO') return 'Pasar un servicio a ' + nc(c.datos.cliente);
   if (c.accion === 'MOVER_FLUJOS') return 'Nuevo orden de los servicios';
@@ -358,14 +359,14 @@ function vFicha(id) {
   const notas = S.cola.filter(n => n.accion === 'AGREGAR_NOTA' && n.datos.cliente === id).map(n => ({ f: n.fecha.slice(0, 10), c: 'APP', a: 'Nota', r: n.datos.texto, pend: 1 })), his = notas.concat(c.his || []);
   const dc = diasCumple(c.cu), car = enlace(c.car);
   let x = '<h1>' + esc(c.n) + '</h1><span class="etq">' + esc(String(c.s || '').replace(/_/g, ' ')) + '</span>' + (c.ci ? '<span class="etq">' + esc(c.ci) + '</span>' : '') + etqInteres(c.pi) + (dc === 0 ? '<span class="etq oro">Cumple hoy</span>' : '') + String(c.et || '').split('|').map(t => t.trim()).filter(Boolean).map(t => '<span class="etq"># ' + esc(t) + '</span>').join('');
-  x += '<div class="acc">' + botonesContacto(c, dc === 0 ? 'CUMPLE_HOY' : dc !== null && dc <= 7 ? 'CUMPLE_SEMANA' : '') + (car ? '<a class="b" target="_blank" rel="noopener noreferrer" href="' + esc(car) + '">Carpeta</a>' : (S.datos.ajustes || {}).od && !c.nuevo && !S.cola.some(q => q.accion === 'CREAR_EXPEDIENTE' && q.datos.cliente === id) ? '<button class="b" data-a="expediente" data-id="' + esc(id) + '">Crear expediente</button>' : '') + '</div>';
+  x += '<div class="acc">' + botonesContacto(c, dc === 0 ? 'CUMPLE_HOY' : dc !== null && dc <= 7 ? 'CUMPLE_SEMANA' : '') + '</div>';
   x += '<div class="acc"><button class="b p" data-a="agendar" data-id="' + esc(id) + '">Agendar reunión</button><button class="b" data-a="nuevaT" data-id="' + esc(id) + '">Nueva tarea</button><button class="b" data-a="nota" data-id="' + esc(id) + '">Agregar nota</button><button class="b" data-a="onb" data-id="' + esc(id) + '">Enviar onboarding</button></div>';
-  x += '<div class="acc"><button class="b" data-a="editar" data-id="' + esc(id) + '">Editar contacto</button>' + (c.nuevo ? '' : '<button class="b" data-a="foto" data-id="' + esc(id) + '">Foto de documento</button><button class="b" data-a="unificar" data-id="' + esc(id) + '">Unificar con otro</button>') + '</div>' + (c.nuevo ? '<p class="gris peq">Recién creado: se guarda en el CRM al sincronizar. Ya puedes agendarle, crearle tareas o contratos; las fotos y la unificación se habilitan cuando el CRM lo confirme.</p>' : c.pend ? '<p class="gris peq">Tiene cambios por confirmar en el CRM.</p>' : '');
+  x += '<div class="acc"><button class="b" data-a="editar" data-id="' + esc(id) + '">Editar contacto</button>' + (c.nuevo ? '' : '<button class="b" data-a="unificar" data-id="' + esc(id) + '">Unificar con otro</button>') + '</div>' + (c.nuevo ? '<p class="gris peq">Recién creado: se guarda en el CRM al sincronizar. Ya puedes agendarle, crearle tareas o contratos; las fotos y la unificación se habilitan cuando el CRM lo confirme.</p>' : c.pend ? '<p class="gris peq">Tiene cambios por confirmar en el CRM.</p>' : '');
+  if (!c.nuevo) x += seccionDocumentos(c, id, car);
   const cumpleTxt = c.cu ? new Date('2000-' + c.cu + 'T12:00:00').toLocaleDateString('es-CO', { day: 'numeric', month: 'long' }) + (dc === 0 ? ' (hoy)' : dc !== null ? ' (en ' + dc + (dc === 1 ? ' día)' : ' días)') : '') : '';
   const datos = [['Teléfonos', (c.tel || []).join(', ')], ['Correos', (c.mail || []).join(', ')], ['Cumpleaños', cumpleTxt], ['Relación', c.rc], ['Llegó por', c.fu], ['Interés', c.pi ? c.pi + '/100 · ' + (c.pm || '') : ''], ['Necesidad', c.nec], ['Objeciones', c.obj], ['Próxima acción', c.pa], ['Próximo contacto', c.fp ? fmtDia(c.fp) : ''], ['Notas', c.not]].filter(d => d[1]);
   if (datos.length) x += '<h2>Datos</h2><div class="card">' + datos.map(d => '<p><b>' + d[0] + '</b><br><span class="texto">' + esc(d[1]) + '</span></p>').join('') + '</div>';
   if (c.pp || c.pf) x += '<h2>Perfil</h2><div class="card">' + (c.pp ? '<p><b>Pensional</b><br><span class="texto">' + esc(c.pp) + '</span></p>' : '') + (c.pf ? '<p><b>Financiero</b><br><span class="texto">' + esc(c.pf) + '</span></p>' : '') + '</div>';
-  if ((c.doc || []).length || c.ce) x += '<h2>Expediente</h2><div class="card">' + (c.ce ? '<p class="gris">' + (c.ce === 'VERIFICADA' ? 'Carpeta vinculada' : 'Carpeta con ruta histórica sin verificar') + '</p>' : '') + (c.doc || []).map(d => { const u = enlace(d.u); return '<div class="fila"><span>' + (u ? '<a target="_blank" rel="noopener noreferrer" href="' + esc(u) + '">' + esc(d.n || 'Documento') + '</a>' : esc(d.n || 'Documento')) + (d.t ? ' <span class="gris peq">' + esc(String(d.t).replace(/_/g, ' ').toLowerCase()) + '</span>' : '') + '</span><span class="gris peq">' + (d.f ? fmtDia(d.f) : '') + '</span></div>'; }).join('') + '</div>';
   const futuras = rs.filter(r => new Date(r.f).getTime() >= Date.now() - 15 * 60000 && r.e !== 'CANCELADA').reverse(), porMarcar = rs.filter(r => new Date(r.f).getTime() < Date.now() - 15 * 60000 && (r.e === 'PROGRAMADA' || r.e === 'PENDIENTE_CONFIRMAR'));
   if (futuras.length || porMarcar.length) x += '<h2>Reuniones</h2>' + futuras.map(r => tarjetaReunion(r, 1)).join('') + porMarcar.map(r => tarjetaReunion(r, 1)).join('');
   x += '<h2>Oportunidades</h2>' + ops.map(tarjetaOportunidad).join('') + '<button class="b ancho" data-a="nuevaO" data-id="' + esc(id) + '">+ Oportunidad</button>';
@@ -394,6 +395,22 @@ function vSinc() {
   if (S.bioPuede) x += '<h2>Face ID</h2><div class="card"><p class="gris">' + (S.bioActivo ? 'Activado: en la pantalla del PIN toca "Entrar con Face ID".' : 'Desbloquea la app con tu cara en vez de escribir el PIN.') + '</p><button class="b' + (S.bioActivo ? '' : ' p') + '" data-a="' + (S.bioActivo ? 'bioOff' : 'bioOn') + '">' + (S.bioActivo ? 'Desactivar Face ID' : 'Activar Face ID') + '</button></div>';
   x += '<h2>Este dispositivo</h2><div class="card"><p class="gris">' + esc(S.sesion && S.sesion.nombre || '') + ' · Versión de la app ' + VERSION_APP + '</p><div class="acc"><button class="b" data-a="bloquear">Bloquear ahora</button><button class="b mal" data-a="desvincular">Borrar datos de este dispositivo</button></div></div>';
   return x;
+}
+
+/* ---------- Documentos y carpeta del cliente ---------- */
+const TIPOS_DOC = ['Cédula', 'Historia laboral', 'Contrato firmado', 'Formulario', 'Certificado', 'Resolución o respuesta de entidad', 'Soporte de pago', 'Otro'];
+function seccionDocumentos(c, id, car) {
+  const expPend = S.cola.some(q => q.accion === 'CREAR_EXPEDIENTE' && q.datos.cliente === id), subPend = S.cola.filter(q => q.accion === 'CREAR_SUBCARPETA' && q.datos.cliente === id);
+  const od = (S.datos.ajustes || {}).od;
+  let x = '<h2>Documentos</h2><div class="card">';
+  x += '<p class="gris">' + (car ? 'Carpeta en OneDrive vinculada.' : expPend ? 'Expediente en creación: se crea al sincronizar.' : 'Aún no tiene carpeta en OneDrive.') + (!od ? ' OneDrive no aparece conectado en tu última sincronización.' : '') + '</p>';
+  x += '<div class="acc"><button class="b p" data-a="docs" data-id="' + esc(id) + '">Subir documentos</button>';
+  if (car) x += '<a class="b" target="_blank" rel="noopener noreferrer" href="' + esc(car) + '">Abrir carpeta</a><button class="b" data-a="subcarpeta" data-id="' + esc(id) + '">Nueva subcarpeta</button>';
+  else if (!expPend) x += '<button class="b" data-a="expediente" data-id="' + esc(id) + '">Crear expediente</button>';
+  x += '</div>';
+  if (subPend.length) x += '<p class="gris peq">Por crear: ' + subPend.map(q => esc(q.datos.nombre)).join(', ') + '</p>';
+  x += (c.doc || []).map(d => { const u = enlace(d.u); return '<div class="fila"><span>' + (u ? '<a target="_blank" rel="noopener noreferrer" href="' + esc(u) + '">' + esc(d.n || 'Documento') + '</a>' : esc(d.n || 'Documento')) + (d.t ? ' <span class="gris peq">' + esc(String(d.t).replace(/_/g, ' ').toLowerCase()) + '</span>' : '') + '</span><span class="gris peq">' + (d.f ? fmtDia(d.f) : '') + '</span></div>'; }).join('');
+  return x + '</div>';
 }
 
 /* ---------- Flujo de servicio ---------- */
@@ -817,6 +834,28 @@ const A = {
     let k = 0; const ids = todos.map(f => f.e === 'EN_CURSO' ? act[k++] : f.id);
     encolar('MOVER_FLUJOS', { ids }, 'Orden guardado', false);
   },
+  docs(el) {
+    const c = cliente(el.dataset.id); if (!c) return;
+    dialogo('<h3>Documentos de ' + esc(c.n) + '</h3><label for="dct">Tipo de documento</label><select id="dct">' + TIPOS_DOC.map(t => '<option>' + esc(t) + '</option>').join('') + '</select><label for="dcn">Nombre o detalle (opcional)</label><input id="dcn" maxlength="80" placeholder="Por ejemplo: cédula por ambas caras"><label for="dcf">Fotos o PDF (puedes elegir varios)</label><input id="dcf" type="file" multiple accept="image/*,application/pdf"><p class="gris peq">Se envían ahora y llegan a su carpeta de OneDrive en unos minutos. Si aún no tiene carpeta, quedan en el CRM y pasan a OneDrive cuando se cree su expediente. Requiere internet.</p><div id="dcp" class="gris peq"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="docsYa" data-id="' + esc(c.id) + '">Enviar</button></div>');
+  },
+  async docsYa(el) {
+    const l = [...($('dcf').files || [])]; if (!l.length) { avisar('Elige al menos una foto o PDF'); return; }
+    const base = ($('dct').value === 'Otro' ? '' : $('dct').value) + ($('dcn').value.trim() ? ($('dct').value === 'Otro' ? '' : ' - ') + $('dcn').value.trim() : '') || 'Documento';
+    el.disabled = true; let ok = 0;
+    for (let i = 0; i < l.length; i++) {
+      $('dcp').textContent = 'Enviando ' + (i + 1) + ' de ' + l.length + '…';
+      if (await subirArchivo(l[i], 'DOCUMENTO', el.dataset.id, base + (l.length > 1 ? ' ' + (i + 1) : ''))) ok++;
+    }
+    el.disabled = false;
+    if (ok === l.length) { cerrarDialogo(); avisar(ok === 1 ? 'Documento enviado: llega a su carpeta en unos minutos' : ok + ' documentos enviados: llegan a su carpeta en unos minutos'); }
+    else $('dcp').textContent = ok + ' de ' + l.length + ' enviados. Revisa la conexión y vuelve a intentar con los que faltan.';
+  },
+  subcarpeta(el) {
+    const c = cliente(el.dataset.id); if (!c) return;
+    dialogo('<h3>Nueva subcarpeta</h3><p class="gris">Dentro de la carpeta de ' + esc(c.n) + ' en OneDrive.</p><label for="scn">Nombre</label><input id="scn" maxlength="100" placeholder="Por ejemplo: Contratos"><div id="scerr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="subcarpetaYa" data-id="' + esc(c.id) + '">Crear</button></div>');
+    $('scn').focus();
+  },
+  subcarpetaYa(el) { const n = $('scn').value.trim(); if (!n) { $('scerr').textContent = 'Escribe el nombre.'; return; } cerrarDialogo(); encolar('CREAR_SUBCARPETA', { cliente: el.dataset.id, nombre: n }, 'Se creará la subcarpeta al sincronizar'); },
   expediente(el) {
     const c = cliente(el.dataset.id); if (!c) return; const a = (S.datos.ajustes || {}).anio || hoy().slice(0, 4);
     dialogo('<h3>Crear expediente de ' + esc(c.n) + '</h3><p class="peq">Se crea su carpeta en OneDrive con el siguiente consecutivo del año (OI - P - 000045 - NOMBRE), se registra en el registro maestro y queda vinculada a su ficha.</p><label for="exa">Año del expediente</label><input id="exa" type="number" min="2020" max="2099" value="' + esc(a) + '"><label class="fila"><span>Verifiqué el pago en mi banco</span><input id="exp" type="checkbox" style="width:auto"></label><div id="exerr" class="err"></div><div class="acc"><button class="b" data-a="cerrarD">Cancelar</button><button class="b p" data-a="expedienteYa" data-id="' + esc(c.id) + '">Crear expediente</button></div>');
